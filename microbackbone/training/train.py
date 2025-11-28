@@ -9,6 +9,7 @@ from typing import Dict
 import torch
 import torch.optim as optim
 from torch.cuda.amp import GradScaler, autocast
+from tqdm.auto import tqdm
 
 from microbackbone.data.datamodule import MicroBackboneDataModule
 from microbackbone.models.utils import accuracy, create_model
@@ -84,7 +85,13 @@ def train() -> None:
         train_loss = 0.0
         correct1 = 0
         total = 0
-        for step, (imgs, labels) in enumerate(data.train_dataloader()):
+        train_loader = data.train_dataloader()
+        progress = tqdm(
+            train_loader,
+            desc=f"Epoch {epoch+1}/{cfg['epochs']} [train]",
+            leave=False,
+        )
+        for imgs, labels in progress:
             imgs, labels = imgs.to(device, non_blocking=True), labels.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
             with autocast(enabled=device.type == "cuda"):
@@ -99,10 +106,7 @@ def train() -> None:
             correct1 += acc1.item() * imgs.size(0) / 100
             total += imgs.size(0)
 
-            if (step + 1) % default_cfg.get("log_interval", 50) == 0:
-                print(
-                    f"Epoch {epoch+1}/{cfg['epochs']} Step {step+1}: loss={loss.item():.4f} acc@1={acc1.item():.2f}"
-                )
+            progress.set_postfix(loss=loss.item(), acc1=acc1.item())
 
         scheduler.step()
         history["train_loss"].append(train_loss / total)
@@ -112,8 +116,14 @@ def train() -> None:
         val_loss = 0.0
         val_correct1 = 0
         val_total = 0
+        val_loader = data.val_dataloader()
+        val_progress = tqdm(
+            val_loader,
+            desc=f"Epoch {epoch+1}/{cfg['epochs']} [val]",
+            leave=False,
+        )
         with torch.no_grad():
-            for imgs, labels in data.val_dataloader():
+            for imgs, labels in val_progress:
                 imgs, labels = imgs.to(device, non_blocking=True), labels.to(device, non_blocking=True)
                 outputs = model(imgs)
                 loss = criterion(outputs, labels)
@@ -121,6 +131,8 @@ def train() -> None:
                 val_loss += loss.item() * imgs.size(0)
                 val_correct1 += acc1.item() * imgs.size(0) / 100
                 val_total += imgs.size(0)
+
+                val_progress.set_postfix(loss=loss.item(), acc1=acc1.item())
 
         val_acc = 100 * val_correct1 / val_total
         history["val_loss"].append(val_loss / val_total)
