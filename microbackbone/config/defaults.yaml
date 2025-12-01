@@ -1,0 +1,6 @@
+seed: 42
+accelerator: cpu
+precision: 32
+log_interval: 50
+output_dir: outputs
+checkpoint_dir: outputs/checkpoints
