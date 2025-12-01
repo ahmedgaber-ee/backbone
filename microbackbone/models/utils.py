@@ -7,26 +7,26 @@ import torch
 from torch import nn
 from torchvision import models
 
-from .backbone import MicroSignBackbone, MicroSignDetector
+from .backbone import MicroSignEdgeBackbone, MicroSignEdgeDetector
 
 
 def create_model(
     task: str = "classification",
     num_classes: int = 10,
-    variant: str = "micro",
+    variant: str = "edge_small",
     input_size: int = 224,
     pretrained_path: str | None = None,
     return_stages: Iterable[int] | None = None,
-) -> MicroSignBackbone | MicroSignDetector:
+) -> MicroSignEdgeBackbone | MicroSignEdgeDetector:
     """Unified factory for classification, detection, or pure backbones."""
     if task == "classification":
-        model = MicroSignBackbone(
+        model = MicroSignEdgeBackbone(
             variant=variant, num_classes=num_classes, input_size=input_size, return_stages=None
         )
     elif task == "detection":
-        model = MicroSignDetector(num_classes=num_classes, variant=variant, input_size=input_size)
+        model = MicroSignEdgeDetector(num_classes=num_classes, variant=variant, input_size=input_size)
     elif task == "backbone":
-        model = MicroSignBackbone(
+        model = MicroSignEdgeBackbone(
             variant=variant,
             num_classes=None,
             return_stages=return_stages if return_stages is not None else [2, 3, 4],

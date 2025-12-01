@@ -1,4 +1,4 @@
-"""Benchmark FLOPs, params, and inference speed for MicroSign-Net or TorchVision backbones."""
+"""Benchmark FLOPs, params, and inference speed for MicroSign-Edge or TorchVision backbones."""
 from __future__ import annotations
 
 import argparse
@@ -14,17 +14,10 @@ try:
 except ImportError:  # pragma: no cover
     yaml = None
 
-# ------------------------------------------------------------
-# Clean THOP import block (no debug prints)
-# ------------------------------------------------------------
 try:
-    import thop
-    profile = thop.profile
-except Exception:
-    try:
-        from ultralytics_thop import profile
-    except Exception:
-        profile = None
+    from thop import profile  # type: ignore
+except Exception:  # pragma: no cover
+    profile = None
 
 
 def load_yaml(path: Path):
@@ -34,23 +27,22 @@ def load_yaml(path: Path):
         return yaml.safe_load(f)
 
 
-def _clear_thop_attributes(model):
-    """Remove THOP attributes to avoid duplicate-attribute errors."""
-    for m in model.modules():
-        for attr in ("total_ops", "total_params", "total_macs"):
-            if hasattr(m, attr):
-                delattr(m, attr)
-
-
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Benchmark MicroSign-Net or TorchVision models")
+    parser = argparse.ArgumentParser(description="Benchmark MicroSign-Edge or TorchVision models")
     parser.add_argument("--config", type=str, default="microbackbone/config/model.yaml")
-    parser.add_argument("--arch", type=str, default="microbackbone", help="Backbone name (microbackbone or TorchVision model)")
+    parser.add_argument(
+        "--arch", type=str, default="microsign_edge", help="Backbone name (microsign_edge or TorchVision model)"
+    )
     parser.add_argument("--input-size", type=int, default=224)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--runs", type=int, default=50)
     parser.add_argument("--pretrained", action="store_true", help="Use DEFAULT TorchVision weights when available")
+    parser.add_argument(
+        "--reparam-edge",
+        action="store_true",
+        help="Fuse MicroSign-Edge RSDBlocks before benchmarking for deployment-like timing",
+    )
     return parser.parse_args()
 
 
@@ -60,30 +52,33 @@ def benchmark() -> None:
 
     device = torch.device(args.device)
     arch = args.arch.lower()
-    if arch == "microbackbone":
+    if arch in {"microsign_edge", "microbackbone"}:
         model = create_model(
             task=cfg["task"], num_classes=cfg["num_classes"], variant=cfg["variant"], input_size=args.input_size
         ).to(device)
+        if args.reparam_edge:
+            try:
+                from microbackbone.models.modules import reparameterize_microsign_edge
+
+                reparameterize_microsign_edge(model)
+            except Exception as exc:  # pragma: no cover
+                print(f"[warn] Failed to reparameterize MicroSign-Edge blocks: {exc}")
     else:
         model = create_torchvision_model(
             name=arch, num_classes=cfg["num_classes"], pretrained=args.pretrained, device=device
         )
-
     model.eval()
+
     dummy = torch.randn(1, 3, args.input_size, args.input_size, device=device)
 
     params = sum(p.numel() for p in model.parameters())
     flops = None
-
-    # FLOPs profiling (safe)
     if profile is not None:
         try:
-            _clear_thop_attributes(model)
             flops, _ = profile(model, inputs=(dummy,), verbose=False)
         except Exception:
             flops = None
 
-    # Latency & FPS
     with torch.no_grad():
         for _ in range(args.warmup):
             _ = model(dummy)
@@ -92,7 +87,6 @@ def benchmark() -> None:
             _ = model(dummy)
         torch.cuda.synchronize() if device.type == "cuda" else None
         elapsed = time.perf_counter() - start
-
     avg_ms = (elapsed / args.runs) * 1000
     fps = args.runs / elapsed
 
@@ -101,7 +95,7 @@ def benchmark() -> None:
     if flops is not None:
         print(f"FLOPs (approx): {flops/1e6:.2f} MFLOPs")
     else:
-        print("FLOPs: not available (THOP error or unsupported model)")
+        print("FLOPs: thop not installed, skipped")
     print(f"Latency: {avg_ms:.2f} ms | Throughput: {fps:.2f} FPS")
 
 

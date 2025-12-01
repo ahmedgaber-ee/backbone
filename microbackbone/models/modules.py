@@ -1,14 +1,15 @@
-"""Core building blocks for MicroSign-Net backbone."""
+"""Core building blocks for the MicroSign-Edge backbone family."""
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class ChannelShuffle(nn.Module):
-    """Channel shuffle utility for grouped convolutions."""
+    """Channel shuffle utility reused for shift-mix stages."""
 
     def __init__(self, groups: int) -> None:
         super().__init__()
@@ -22,152 +23,232 @@ class ChannelShuffle(nn.Module):
         return x.view(b, c, h, w)
 
 
-class DynamicConv(nn.Module):
-    """Dynamic convolution with multiple kernels and attention-based weighting."""
+def _fuse_conv_bn(conv: nn.Conv2d, bn: nn.BatchNorm2d) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Return fused conv weights and bias for a Conv2d + BatchNorm2d pair."""
 
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int = 3,
-        stride: int = 1,
-        num_kernels: int = 4,
-    ) -> None:
-        super().__init__()
-        padding = kernel_size // 2
-        self.num_kernels = num_kernels
+    if conv.bias is None:
+        conv_bias = torch.zeros(conv.weight.size(0), device=conv.weight.device)
+    else:
+        conv_bias = conv.bias
 
-        self.kernels = nn.ModuleList(
-            [
-                nn.Conv2d(
-                    in_channels,
-                    out_channels,
-                    kernel_size,
-                    stride,
-                    padding,
-                    bias=False,
-                    groups=1,
-                )
-                for _ in range(num_kernels)
-            ]
-        )
-
-        self.attention = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(in_channels, num_kernels, 1),
-            nn.Softmax(dim=1),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # noqa: D401
-        attn = self.attention(x)
-        outputs = [kernel(x) for kernel in self.kernels]
-        return sum(attn[:, i : i + 1] * outputs[i] for i in range(self.num_kernels))
+    w = conv.weight
+    bn_var_rsqrt = torch.rsqrt(bn.running_var + bn.eps)
+    scale = bn.weight * bn_var_rsqrt
+    fused_weight = w * scale.reshape(-1, 1, 1, 1)
+    fused_bias = bn.bias + (conv_bias - bn.running_mean) * scale
+    return fused_weight, fused_bias
 
 
-class SEBlock(nn.Module):
-    """Squeeze-and-Excitation block."""
+def _shift_groups(x: torch.Tensor) -> torch.Tensor:
+    """Zero-FLOP spatial shifts for four channel groups (up/left/down/right)."""
 
-    def __init__(self, channels: int, reduction: int = 4) -> None:
-        super().__init__()
-        squeezed = max(channels // reduction, 8)
-        self.squeeze = nn.AdaptiveAvgPool2d(1)
-        self.excitation = nn.Sequential(
-            nn.Conv2d(channels, squeezed, 1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(squeezed, channels, 1),
-            nn.Sigmoid(),
-        )
+    b, c, h, w = x.shape
+    if c < 4:
+        return x
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # noqa: D401
-        weights = self.excitation(self.squeeze(x))
-        return x * weights
+    split = torch.chunk(x, 4, dim=1)
+    up = F.pad(split[0], (0, 0, 1, 0))[:, :, :h, :]
+    left = F.pad(split[1], (1, 0, 0, 0))[:, :, :, :w]
+    down = F.pad(split[2], (0, 0, 0, 1))[:, :, 1:, :]
+    right = F.pad(split[3], (0, 1, 0, 0))[:, :, :, 1:]
+    return torch.cat([up, left, down, right], dim=1)
 
 
-class EfficientBlock(nn.Module):
-    """Inverted residual block with optional dynamic depthwise and SE."""
+class ReparamShiftDepthwiseBlock(nn.Module):
+    """RSDBlock: rich training graph, single-path inference for MCUs.
+
+    Training-time structure:
+    - optional 1x1 expansion + BN + SiLU
+    - shift-mix (directional shifts + channel shuffle)
+    - depthwise 3x3 branch + BN plus identity DW 1x1 branch -> summed then BN + activation
+    - grouped SE-like gating
+    - 1x1 projection + BN with residual when shapes match
+
+    switch_to_deploy() fuses Conv+BN pairs and merges branches so inference reduces to
+    shift -> depthwise3x3 -> BN -> activation -> pointwise -> BN -> (residual) -> activation.
+    """
 
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
         stride: int = 1,
-        expansion: int = 4,
-        use_dynamic: bool = False,
-        use_se: bool = True,
+        expansion: int = 2,
+        activation: str = "silu",
     ) -> None:
         super().__init__()
         self.stride = stride
         self.use_residual = stride == 1 and in_channels == out_channels
-        hidden_dim = in_channels * expansion
+        self.mid_channels = in_channels * expansion
+        self.activation = nn.SiLU(inplace=True) if activation == "silu" else nn.ReLU(inplace=True)
+        self.deploy = False
 
-        self.expand: Optional[nn.Sequential]
+        self.expand_conv: nn.Conv2d | None = None
+        self.expand_bn: nn.BatchNorm2d | None = None
         if expansion != 1:
-            self.expand = nn.Sequential(
-                nn.Conv2d(in_channels, hidden_dim, 1, bias=False),
-                nn.BatchNorm2d(hidden_dim),
-                nn.ReLU6(inplace=True),
-            )
+            self.expand_conv = nn.Conv2d(in_channels, self.mid_channels, 1, bias=False)
+            self.expand_bn = nn.BatchNorm2d(self.mid_channels)
         else:
-            self.expand = None
+            self.mid_channels = in_channels
 
-        dw_channels = hidden_dim if expansion != 1 else in_channels
-        if use_dynamic and stride == 1:
-            depthwise_layer: nn.Module = DynamicConv(
-                dw_channels, dw_channels, kernel_size=3, stride=stride, num_kernels=3
-            )
-        else:
-            depthwise_layer = nn.Conv2d(
-                dw_channels, dw_channels, 3, stride, 1, groups=dw_channels, bias=False
-            )
-
-        self.depthwise = nn.Sequential(
-            depthwise_layer,
-            nn.BatchNorm2d(dw_channels),
-            nn.ReLU6(inplace=True),
+        self.shift_shuffle = ChannelShuffle(groups=4)
+        self.depthwise = nn.Conv2d(
+            self.mid_channels,
+            self.mid_channels,
+            3,
+            stride=stride,
+            padding=1,
+            groups=self.mid_channels,
+            bias=False,
         )
+        self.depthwise_bn = nn.BatchNorm2d(self.mid_channels)
 
-        self.se = SEBlock(dw_channels) if use_se else None
+        self.identity_conv: nn.Conv2d | None = None
+        self.identity_bn: nn.BatchNorm2d | None = None
+        if stride == 1:
+            self.identity_conv = nn.Conv2d(
+                self.mid_channels,
+                self.mid_channels,
+                1,
+                groups=self.mid_channels,
+                bias=False,
+            )
+            self.identity_bn = nn.BatchNorm2d(self.mid_channels)
 
-        self.project = nn.Sequential(
-            nn.Conv2d(dw_channels, out_channels, 1, bias=False),
-            nn.BatchNorm2d(out_channels),
-        )
+        self.merge_bn = nn.BatchNorm2d(self.mid_channels)
 
-        self.shuffle = ChannelShuffle(groups=4) if in_channels >= 16 and out_channels >= 16 else None
+        # Grouped SE-like gating
+        groups = max(1, self.mid_channels // 16)
+        reduced = max(self.mid_channels // 8, 4)
+        self.se_reduce = nn.Conv2d(self.mid_channels, reduced, 1, groups=groups)
+        self.se_expand = nn.Conv2d(reduced, self.mid_channels, 1, groups=groups)
+
+        self.project = nn.Conv2d(self.mid_channels, out_channels, 1, bias=False)
+        self.project_bn = nn.BatchNorm2d(out_channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # noqa: D401
-        identity = x
-        out = self.expand(x) if self.expand is not None else x
-        out = self.depthwise(out)
-        if self.se is not None:
-            out = self.se(out)
+        if self.deploy:
+            return self._forward_deploy(x)
+
+        out = x
+        if self.expand_conv is not None and self.expand_bn is not None:
+            out = self.activation(self.expand_bn(self.expand_conv(out)))
+
+        out = _shift_groups(out)
+        out = self.shift_shuffle(out)
+
+        dw_out = self.depthwise_bn(self.depthwise(out))
+        if self.identity_conv is not None and self.identity_bn is not None:
+            id_out = self.identity_bn(self.identity_conv(out))
+            out = dw_out + id_out
+        else:
+            out = dw_out
+
+        out = self.activation(self.merge_bn(out))
+
+        # SE-like gating
+        se = F.adaptive_avg_pool2d(out, 1)
+        se = F.relu(self.se_reduce(se))
+        se = torch.sigmoid(self.se_expand(se))
+        out = out * se
+
+        out = self.project_bn(self.project(out))
+        if self.use_residual:
+            out = out + x
+        return self.activation(out)
+
+    def _forward_deploy(self, x: torch.Tensor) -> torch.Tensor:
+        out = x
+        if self.expand_conv is not None:
+            out = self.activation(self.expand_conv(out))
+
+        out = _shift_groups(out)
+        out = self.shift_shuffle(out)
+        out = self.activation(self.reparam_depthwise(out))
+        if self.se_reduce is not None and self.se_expand is not None:
+            se = F.adaptive_avg_pool2d(out, 1)
+            se = F.relu(self.se_reduce(se))
+            se = torch.sigmoid(self.se_expand(se))
+            out = out * se
         out = self.project(out)
         if self.use_residual:
-            out = out + identity
-        if self.shuffle is not None:
-            out = self.shuffle(out)
-        return out
+            out = out + x
+        return self.activation(out)
+
+    def _get_equivalent_depthwise(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        dw_kernel, dw_bias = _fuse_conv_bn(self.depthwise, self.depthwise_bn)
+
+        if self.identity_conv is not None and self.identity_bn is not None:
+            id_kernel, id_bias = _fuse_conv_bn(self.identity_conv, self.identity_bn)
+            # expand 1x1 depthwise kernel to 3x3 center
+            id_kernel_expanded = torch.zeros_like(dw_kernel)
+            center = id_kernel.shape[-1] // 2
+            id_kernel_expanded[:, :, center, center] = id_kernel.squeeze(-1).squeeze(-1)
+            merged_kernel = dw_kernel + id_kernel_expanded
+            merged_bias = dw_bias + id_bias
+        else:
+            merged_kernel, merged_bias = dw_kernel, dw_bias
+
+        # fuse merge_bn
+        bn = self.merge_bn
+        bn_var_rsqrt = torch.rsqrt(bn.running_var + bn.eps)
+        scale = bn.weight * bn_var_rsqrt
+        fused_kernel = merged_kernel * scale.reshape(-1, 1, 1, 1)
+        fused_bias = bn.bias + (merged_bias - bn.running_mean) * scale
+        return fused_kernel, fused_bias
+
+    def switch_to_deploy(self) -> None:
+        """Fuse branches and BNs to a single depthwise + pointwise path."""
+
+        if self.deploy:
+            return
+
+        # Fuse depthwise path
+        dw_kernel, dw_bias = self._get_equivalent_depthwise()
+        self.reparam_depthwise = nn.Conv2d(
+            self.mid_channels,
+            self.mid_channels,
+            3,
+            stride=self.stride,
+            padding=1,
+            groups=self.mid_channels,
+            bias=True,
+        )
+        self.reparam_depthwise.weight.data = dw_kernel
+        self.reparam_depthwise.bias.data = dw_bias
+
+        # Fuse expand and project BNs if they exist
+        if self.expand_conv is not None and self.expand_bn is not None:
+            fused_w, fused_b = _fuse_conv_bn(self.expand_conv, self.expand_bn)
+            self.expand_conv.weight.data = fused_w
+            self.expand_conv.bias = nn.Parameter(fused_b)
+            self.expand_bn = None
+
+        fused_proj_w, fused_proj_b = _fuse_conv_bn(self.project, self.project_bn)
+        self.project.weight.data = fused_proj_w
+        self.project.bias = nn.Parameter(fused_proj_b)
+        self.project_bn = None
+
+        # Remove training-only branches
+        self.depthwise = None  # type: ignore[assignment]
+        self.depthwise_bn = None  # type: ignore[assignment]
+        self.identity_conv = None  # type: ignore[assignment]
+        self.identity_bn = None  # type: ignore[assignment]
+        self.merge_bn = None  # type: ignore[assignment]
+        self.deploy = True
 
 
-class SpatialAttention(nn.Module):
-    """Lightweight spatial attention for salient regions."""
+def reparameterize_microsign_edge(model: nn.Module) -> nn.Module:
+    """Walk a model and fuse all RSDBlocks into their deploy form."""
 
-    def __init__(self, kernel_size: int = 7) -> None:
-        super().__init__()
-        self.conv = nn.Conv2d(2, 1, kernel_size, padding=kernel_size // 2, bias=False)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # noqa: D401
-        avg_out = torch.mean(x, dim=1, keepdim=True)
-        max_out, _ = torch.max(x, dim=1, keepdim=True)
-        attn = self.sigmoid(self.conv(torch.cat([avg_out, max_out], dim=1)))
-        return x * attn
+    for module in model.modules():
+        if isinstance(module, ReparamShiftDepthwiseBlock):
+            module.switch_to_deploy()
+    return model
 
 
 __all__ = [
     "ChannelShuffle",
-    "DynamicConv",
-    "SEBlock",
-    "EfficientBlock",
-    "SpatialAttention",
+    "ReparamShiftDepthwiseBlock",
+    "reparameterize_microsign_edge",
 ]

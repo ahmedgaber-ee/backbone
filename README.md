@@ -1,14 +1,20 @@
-# MicroBackbone (MicroSign-Net)
+# MicroBackbone (MicroSign-Edge)
 
-Lightweight CNN backbone tailored for microcontrollers and edge devices. Extracted from the original notebook into a modular, deployable Python package with export paths for Raspberry Pi and ESP32 (TFLite Micro).
+Lightweight CNN backbone family tailored for microcontrollers and edge devices. Extracted from the original notebook into a modular, deployable Python package with export paths for Raspberry Pi and ESP32 (TFLite Micro).
 
 ## Key Features
-- Variant-aware MicroSign-Net backbone (`nano` → `base`)
-- CIFAR-10 friendly stem for 32×32 data
-- Dynamic depthwise convolutions, SE blocks, spatial attention
-- Training/eval scripts with clean configs
-- Export to TorchScript, ONNX, and TFLite (int8 for ESP32)
-- Deployment recipes for Raspberry Pi and ESP32
+- **MicroSign-Edge backbone** (`edge_nano`, `edge_micro`, `edge_small`) built from Reparam Shift Depthwise (RSD) blocks.
+- Zero-FLOP shift-mix + grouped SE gating for TinyML efficiency and quantization-friendliness.
+- Activation-budget-aware channel scaling for SRAM-constrained deployments.
+- Reparameterization utility to fuse branches for MCU inference (`--reparam-edge`).
+- Training/eval scripts with clean configs and TorchVision drop-in support.
+- Export to TorchScript, ONNX, and TFLite (int8 for ESP32).
+- Deployment recipes for Raspberry Pi and ESP32.
+
+### MicroSign-Edge at a glance
+- **RSD Block**: optional 1×1 expansion → shift-mix (up/left/down/right) → depthwise + identity fusion → grouped SE → 1×1 projection with residuals when safe.
+- **Deploy fusion**: `reparameterize_microsign_edge` collapses branches/BatchNorms to a single depthwise + pointwise path for MCU timing.
+- **Activation-aware scaling**: `_compute_edge_channels` trims channels per stage so activations remain under a simple SRAM budget (8-bit assumption).
 
 ## Repository Structure
 ```
@@ -31,9 +37,9 @@ pip install -r requirements.txt
 ```
 
 ## Training
-Train MicroSign-Net (default) or swap in a TorchVision backbone via `--arch`:
+Train MicroSign-Edge (default) or swap in a TorchVision backbone via `--arch`:
 ```bash
-# MicroSign-Net
+# MicroSign-Edge
 python -m microbackbone.training.train \
   --config microbackbone/config/model.yaml \
   --dataset-config microbackbone/config/datasets.yaml \
@@ -52,12 +58,12 @@ python -m microbackbone.training.train --arch efficientnet_b0 --pretrained \
 python -m microbackbone.training.train --arch convnext_tiny --pretrained \
   --config microbackbone/config/model.yaml --dataset-config microbackbone/config/datasets.yaml --output-dir outputs
 ```
-Checkpoints are written to `outputs/checkpoints/` with the architecture name embedded in the filename.
+Checkpoints are written to `outputs/checkpoints/` with the architecture name embedded in the filename (e.g., `microsignedge_edge_small_best.pth`).
 
-## Testing
+## Testing / Validation
 ```bash
 python -m microbackbone.evaluation.test \
-  --checkpoint outputs/checkpoints/microsign_micro_best.pth \
+  --checkpoint outputs/checkpoints/microsignedge_edge_small_best.pth \
   --config microbackbone/config/model.yaml \
   --dataset-config microbackbone/config/datasets.yaml
 
@@ -71,9 +77,9 @@ python -m microbackbone.evaluation.test \
 
 ## Benchmarking
 ```bash
-# MicroSign-Net
+# MicroSign-Edge (with optional reparameterization)
 python -m microbackbone.evaluation.benchmark \
-  --config microbackbone/config/model.yaml --input-size 32 --runs 200
+  --config microbackbone/config/model.yaml --input-size 32 --runs 200 --reparam-edge
 
 # TorchVision backbone (pretrained head replaced for dataset classes)
 python -m microbackbone.evaluation.benchmark \
@@ -86,14 +92,14 @@ Run side-by-side benchmarks for your checkpoints and TorchVision backbones (pret
 ```bash
 # Compare multiple trained checkpoints
 python -m microbackbone.evaluation.compare_models \
-  --checkpoints outputs/checkpoints/microsign_micro_best.pth outputs/checkpoints/resnet18_best.pth \
+  --checkpoints outputs/checkpoints/microsignedge_edge_small_best.pth outputs/checkpoints/resnet18_best.pth \
   --dataset-config microbackbone/config/datasets.yaml \
   --input-size 3 32 32 \
   --device cpu
 
 # Compare trained checkpoint vs. pretrained TorchVision models
 python -m microbackbone.evaluation.compare_models \
-  --checkpoints outputs/checkpoints/microsign_micro_best.pth \
+  --checkpoints outputs/checkpoints/microsignedge_edge_small_best.pth \
   --models resnet50,mobilenet_v3_large \
   --pretrained \
   --dataset-config microbackbone/config/datasets.yaml
@@ -104,11 +110,29 @@ python -m microbackbone.evaluation.compare_models --all --pretrained --dataset-c
 Outputs are printed as text + markdown tables and saved as `outputs/benchmarks/compare_models.csv` (create the directory if it does not exist). Metrics include params, FLOPs, latency, throughput, file size, and top-1 accuracy on the validation split defined by your dataset config.
 TorchVision-only comparisons are supported (omit `--checkpoints` and use `--models`/`--all`), and the dataset config drives the evaluation dataloaders and `num_classes` when adapting classifier heads.
 
+### TorchVision-only testing/benchmarking
+- **Test a pretrained TorchVision model on your dataset** (classifier head auto-replaced by `num_classes` in the dataset config):
+  ```bash
+  python -m microbackbone.evaluation.test \
+    --checkpoint /tmp/random_init.pth \
+    --arch resnet50 --pretrained \
+    --config microbackbone/config/model.yaml \
+    --dataset-config microbackbone/config/datasets.yaml
+  ```
+- **Benchmark a TorchVision backbone** without training:
+  ```bash
+  python -m microbackbone.evaluation.benchmark --arch mobilenet_v3_small --pretrained --input-size 32
+  ```
+- **Compare multiple TorchVision architectures** (pretrained) with one command:
+  ```bash
+  python -m microbackbone.evaluation.compare_models --models resnet18,efficientnet_b0,convnext_tiny --pretrained --dataset-config microbackbone/config/datasets.yaml
+  ```
+
 
 ## Exporting (TorchScript / ONNX / TFLite)
 ```bash
 python -m microbackbone.evaluation.export_tflite \
-  --checkpoint outputs/checkpoints/microsign_micro_best.pth \
+  --checkpoint outputs/checkpoints/microsignedge_edge_small_best.pth \
   --config microbackbone/config/model.yaml \
   --input-size 32 \
   --output-dir outputs/export --quantize
@@ -150,8 +174,8 @@ python -m microbackbone.tools.model_tools prune \
 Quantize a model (dynamic):
 ```bash
 python -m microbackbone.tools.model_tools quantize \
-  --input-model outputs/checkpoints/microsign_micro_best.pth \
-  --output-model outputs/quantized/microsign_int8.pth \
+  --input-model outputs/checkpoints/microsignedge_edge_small_best.pth \
+  --output-model outputs/quantized/microsignedge_int8.pth \
   --quantization-type dynamic
 ```
 

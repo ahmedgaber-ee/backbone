@@ -184,8 +184,8 @@ def load_checkpoint_model(
     """Load a trained checkpoint and rebuild the appropriate architecture."""
     checkpoint = torch.load(weights_path, map_location="cpu")
     cfg = checkpoint.get("config", fallback_cfg)
-    arch = checkpoint.get("arch", cfg.get("arch", "microbackbone"))
-    variant = checkpoint.get("variant", cfg.get("variant", "micro"))
+    arch = checkpoint.get("arch", cfg.get("arch", "microsign_edge"))
+    variant = checkpoint.get("variant", cfg.get("variant", "edge_small"))
     num_classes = int(cfg.get("num_classes", default_num_classes))
     state_dict = checkpoint.get("model_state_dict", checkpoint)
 

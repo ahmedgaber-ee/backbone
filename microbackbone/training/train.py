@@ -29,7 +29,7 @@ def load_yaml(path: Path) -> Dict:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train MicroSign-Net or TorchVision models")
+    parser = argparse.ArgumentParser(description="Train MicroSign-Edge or TorchVision models")
     parser.add_argument("--config", type=str, default="microbackbone/config/model.yaml")
     parser.add_argument("--dataset-config", type=str, default="microbackbone/config/datasets.yaml")
     parser.add_argument("--default-config", type=str, default="microbackbone/config/defaults.yaml")
@@ -38,8 +38,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--arch",
         type=str,
-        default="microbackbone",
-        help="Model architecture (microbackbone or TorchVision model name, e.g., resnet18)",
+        default="microsign_edge",
+        help="Model architecture (microsign_edge or TorchVision model name, e.g., resnet18)",
     )
     parser.add_argument("--pretrained", action="store_true", help="Use pretrained TorchVision weights when available")
     return parser.parse_args()
@@ -65,7 +65,7 @@ def train() -> None:
     data.setup()
 
     arch = args.arch.lower()
-    if arch == "microbackbone":
+    if arch in {"microsign_edge", "microbackbone"}:
         model = create_model(
             task=cfg["task"],
             num_classes=cfg["num_classes"],
@@ -164,14 +164,14 @@ def train() -> None:
             checkpoint = {
                 "epoch": epoch + 1,
                 "arch": arch,
-                "variant": cfg.get("variant", "micro"),
+                "variant": cfg.get("variant", "edge_small"),
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "val_acc": val_acc,
                 "config": cfg,
                 "data_config": data_cfg,
             }
-            ckpt_name = f"{arch}_best.pth" if arch != "microbackbone" else f"microsign_{cfg['variant']}_best.pth"
+            ckpt_name = f"{arch}_best.pth" if arch not in {"microsign_edge", "microbackbone"} else f"microsignedge_{cfg['variant']}_best.pth"
             torch.save(checkpoint, ckpt_dir / ckpt_name)
 
     (output_dir / "history.json").write_text(json.dumps(history, indent=2))

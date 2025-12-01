@@ -1,4 +1,4 @@
-"""MicroSign-Net backbone definitions."""
+"""MicroSign-Edge backbone family for MCUs."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,161 +7,135 @@ from typing import Dict, Iterable, List, Optional
 import torch
 import torch.nn as nn
 
-from .modules import EfficientBlock, SpatialAttention
-
-
-@dataclass
-class BackboneConfig:
-    """Lightweight container describing a backbone variant."""
-
-    width_mult: float
-    depths: List[int]
-    expansions: List[int]
-    description: str
-    use_dynamic: List[bool]
-    use_se: List[bool]
-
-
-CONFIGS: Dict[str, BackboneConfig] = {
-    "nano": BackboneConfig(
-        width_mult=0.25,
-        depths=[1, 2, 2, 1],
-        expansions=[1, 4, 4, 4],
-        description="Extreme edge (20-50KB)",
-        use_dynamic=[False, False, False, False],
-        use_se=[False, True, True, False],
-    ),
-    "micro": BackboneConfig(
-        width_mult=0.5,
-        depths=[2, 2, 3, 2],
-        expansions=[1, 4, 6, 6],
-        description="Ultra-lightweight (100-200KB)",
-        use_dynamic=[False, True, True, False],
-        use_se=[True, True, True, True],
-    ),
-    "tiny": BackboneConfig(
-        width_mult=0.75,
-        depths=[2, 3, 4, 2],
-        expansions=[1, 4, 6, 6],
-        description="Lightweight (200-400KB)",
-        use_dynamic=[False, True, True, True],
-        use_se=[True, True, True, True],
-    ),
-    "small": BackboneConfig(
-        width_mult=1.0,
-        depths=[2, 3, 5, 3],
-        expansions=[1, 4, 6, 6],
-        description="Balanced (400-800KB)",
-        use_dynamic=[True, True, True, True],
-        use_se=[True, True, True, True],
-    ),
-    "base": BackboneConfig(
-        width_mult=1.25,
-        depths=[3, 4, 6, 3],
-        expansions=[1, 4, 6, 6],
-        description="High accuracy (800KB-1.5MB)",
-        use_dynamic=[True, True, True, True],
-        use_se=[True, True, True, True],
-    ),
-}
+from .modules import ReparamShiftDepthwiseBlock, reparameterize_microsign_edge
 
 
 def _make_divisible(value: float, divisor: int = 8) -> int:
     return max(divisor, int(value + divisor / 2) // divisor * divisor)
 
 
-class MicroSignBackbone(nn.Module):
-    """Efficient backbone optimized for small devices and images."""
+@dataclass
+class EdgeBackboneConfig:
+    """Defines a MicroSign-Edge variant."""
+
+    width_mult: float
+    depths: List[int]
+    expansions: List[int]
+    base_channels: List[int]
+    description: str
+
+
+CONFIGS: Dict[str, EdgeBackboneConfig] = {
+    "edge_nano": EdgeBackboneConfig(
+        width_mult=0.5,
+        depths=[1, 2, 2, 1],
+        expansions=[1, 2, 2, 2],
+        base_channels=[24, 32, 48, 72],
+        description="Sub-50KB MCU-friendly variant",
+    ),
+    "edge_micro": EdgeBackboneConfig(
+        width_mult=0.75,
+        depths=[1, 2, 3, 2],
+        expansions=[1, 2, 2, 3],
+        base_channels=[24, 36, 56, 88],
+        description="TinyML tuned configuration",
+    ),
+    "edge_small": EdgeBackboneConfig(
+        width_mult=1.0,
+        depths=[2, 3, 3, 2],
+        expansions=[2, 2, 3, 3],
+        base_channels=[24, 32, 48, 72],
+        description="Reference 32x32-friendly edge model",
+    ),
+}
+
+
+def _compute_edge_channels(
+    base_channels: List[int], input_size: int, sram_kb: int = 128, safety_factor: float = 0.5
+) -> List[int]:
+    """Reduce channels so activations fit a rough SRAM budget (8-bit assumed)."""
+
+    adjusted: List[int] = []
+    spatial = input_size // 2  # stem stride=2
+    for idx, c in enumerate(base_channels):
+        budget = sram_kb * 1024 * safety_factor
+        channel_cap = max(8, int(budget // max(1, spatial * spatial)))
+        tuned = min(c, channel_cap)
+        tuned = _make_divisible(tuned, 8)
+        adjusted.append(max(8, tuned))
+        if idx < len(base_channels) - 1:
+            spatial = max(1, spatial // 2 if idx in [0, 1] else spatial)
+    return adjusted
+
+
+class MicroSignEdgeBackbone(nn.Module):
+    """Quantization-friendly MicroSign-Edge backbone with RSDBlocks."""
 
     def __init__(
         self,
-        variant: str = "micro",
+        variant: str = "edge_small",
         num_classes: Optional[int] = None,
         return_stages: Optional[Iterable[int]] = None,
-        dropout: float = 0.2,
-        frozen_stages: int = -1,
-        input_size: int = 224,
+        input_size: int = 32,
+        dropout: float = 0.1,
     ) -> None:
         super().__init__()
         if variant not in CONFIGS:
             raise ValueError(f"Variant must be one of {list(CONFIGS.keys())}")
 
-        self.config = CONFIGS[variant]
-        width_mult = self.config.width_mult
-        depths = self.config.depths
-        expansions = self.config.expansions
-        use_dynamic = self.config.use_dynamic
-        use_se = self.config.use_se
-
-        base_channels = [16, 24, 32, 64, 128] if input_size <= 64 else [24, 32, 64, 128, 256]
-        self.out_channels: List[int] = [_make_divisible(c * width_mult) for c in base_channels]
-
-        if input_size <= 64:
-            self.stem = nn.Sequential(
-                nn.Conv2d(3, self.out_channels[0], 3, stride=1, padding=1, bias=False),
-                nn.BatchNorm2d(self.out_channels[0]),
-                nn.ReLU6(inplace=True),
-            )
-        else:
-            self.stem = nn.Sequential(
-                nn.Conv2d(3, self.out_channels[0], 3, stride=2, padding=1, bias=False),
-                nn.BatchNorm2d(self.out_channels[0]),
-                nn.ReLU6(inplace=True),
-            )
-
-        self.stages = nn.ModuleList()
-        in_channels = self.out_channels[0]
-        for stage_idx, depth in enumerate(depths):
-            out_ch = self.out_channels[min(stage_idx + 1, len(self.out_channels) - 1)]
-            expansion = expansions[stage_idx]
-            blocks: List[nn.Module] = []
-            for block_idx in range(depth):
-                if input_size <= 64:
-                    stride = 2 if block_idx == 0 and stage_idx in [1, 2] else 1
-                else:
-                    stride = 2 if block_idx == 0 else 1
-                blocks.append(
-                    EfficientBlock(
-                        in_channels if block_idx == 0 else out_ch,
-                        out_ch,
-                        stride=stride,
-                        expansion=expansion,
-                        use_dynamic=use_dynamic[stage_idx],
-                        use_se=use_se[stage_idx],
-                    )
-                )
-            if stage_idx in [1, 2]:
-                blocks.append(SpatialAttention())
-            self.stages.append(nn.Sequential(*blocks))
-            in_channels = out_ch
-
         self.variant = variant
         self.return_stages = set(return_stages) if return_stages is not None else None
-        self.frozen_stages = frozen_stages
-        self.input_size = input_size
         self.num_classes = num_classes
+        self.input_size = input_size
 
+        cfg = CONFIGS[variant]
+        scaled = [
+            _make_divisible(ch * cfg.width_mult)
+            for ch in _compute_edge_channels(cfg.base_channels, input_size)
+        ]
+
+        stem_channels = _make_divisible(24 * cfg.width_mult)
+        self.stem = nn.Sequential(
+            nn.Conv2d(3, stem_channels, 3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(stem_channels),
+            nn.SiLU(inplace=True),
+        )
+
+        self.stages = nn.ModuleList()
+        in_channels = stem_channels
+        for stage_idx, depth in enumerate(cfg.depths):
+            out_channels = scaled[stage_idx]
+            expansion = cfg.expansions[stage_idx]
+            blocks: List[nn.Module] = []
+            for block_idx in range(depth):
+                stride = 1
+                if stage_idx in [1, 2] and block_idx == 0:
+                    stride = 2
+                blocks.append(
+                    ReparamShiftDepthwiseBlock(
+                        in_channels if block_idx == 0 else out_channels,
+                        out_channels,
+                        stride=stride,
+                        expansion=expansion,
+                    )
+                )
+            self.stages.append(nn.Sequential(*blocks))
+            in_channels = out_channels
+
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
         if num_classes is not None:
-            final_channels = self.out_channels[-1]
-            self.global_pool = nn.AdaptiveAvgPool2d(1)
             self.pre_classifier = nn.Sequential(
-                nn.Linear(final_channels, final_channels),
+                nn.Linear(in_channels, 128),
                 nn.ReLU(inplace=True),
-                nn.Dropout(dropout * 0.5),
+                nn.Dropout(dropout),
             )
-            self.classifier = nn.Linear(final_channels, num_classes)
-            self.dropout = nn.Dropout(dropout)
+            self.classifier = nn.Linear(128, num_classes)
         else:
-            self.global_pool = None
             self.pre_classifier = None
             self.classifier = None
-            self.dropout = None
 
+        self.out_channels = [stem_channels] + scaled
         self._initialize_weights()
-        self._freeze_stages()
-
-        self.total_params = sum(p.numel() for p in self.parameters())
-        self.trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
 
     def _initialize_weights(self) -> None:
         for module in self.modules():
@@ -176,17 +150,6 @@ class MicroSignBackbone(nn.Module):
                 nn.init.normal_(module.weight, 0, 0.01)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
-
-    def _freeze_stages(self) -> None:
-        if self.frozen_stages >= 0:
-            self.stem.eval()
-            for param in self.stem.parameters():
-                param.requires_grad = False
-        for stage_index in range(self.frozen_stages):
-            if stage_index < len(self.stages):
-                self.stages[stage_index].eval()
-                for param in self.stages[stage_index].parameters():
-                    param.requires_grad = False
 
     def forward_features(self, x: torch.Tensor) -> torch.Tensor | Dict[str, torch.Tensor]:
         outputs: Dict[str, torch.Tensor] = {}
@@ -206,83 +169,52 @@ class MicroSignBackbone(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor | Dict[str, torch.Tensor]:  # noqa: D401
         if self.classifier is None:
             return self.forward_features(x)
-        features = self.forward_features(x)
-        if isinstance(features, dict):
-            x = list(features.values())[-1]
+        feats = self.forward_features(x)
+        if isinstance(feats, dict):
+            x = list(feats.values())[-1]
         else:
-            x = features
-        x = self.global_pool(x)
-        x = x.flatten(1)
-        x = self.pre_classifier(x)
-        x = self.dropout(x) if self.dropout is not None else x
+            x = feats
+        x = self.global_pool(x).flatten(1)
+        x = self.pre_classifier(x)  # type: ignore[arg-type]
         return self.classifier(x)
 
-    def get_model_info(self) -> Dict[str, object]:
-        return {
-            "variant": self.variant,
-            "description": self.config.description,
-            "depths": self.config.depths,
-            "expansions": self.config.expansions,
-            "output_channels": self.out_channels,
-            "return_stages": self.return_stages,
-            "num_classes": self.num_classes,
-            "input_size": self.input_size,
-            "total_parameters": self.total_params,
-            "trainable_parameters": self.trainable_params,
-            "model_size_mb": self.total_params * 4 / (1024 * 1024),
-            "frozen_stages": self.frozen_stages,
-        }
+    def reparameterize(self) -> None:
+        """Fuse RSDBlocks for deployment."""
 
-    def train(self, mode: bool = True) -> "MicroSignBackbone":  # type: ignore[override]
-        super().train(mode)
-        self._freeze_stages()
-        return self
+        reparameterize_microsign_edge(self)
 
 
-class DetectionHead(nn.Module):
-    """Minimal detection head for toy demos."""
+class MicroSignEdgeDetector(nn.Module):
+    """Toy detector head using MicroSign-Edge features."""
 
-    def __init__(self, in_channels: int, num_anchors: int = 3, num_classes: int = 80) -> None:
+    def __init__(self, num_classes: int = 80, variant: str = "edge_small", input_size: int = 224) -> None:
         super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels, 3, padding=1, groups=in_channels, bias=False),
-            nn.BatchNorm2d(in_channels),
-            nn.ReLU6(inplace=True),
-            nn.Conv2d(in_channels, num_anchors * (5 + num_classes), 1),
+        self.backbone = MicroSignEdgeBackbone(
+            variant=variant, num_classes=None, return_stages=[2, 3, 4], input_size=input_size
         )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # noqa: D401
-        return self.conv(x)
-
-
-class MicroSignDetector(nn.Module):
-    """Simple multi-scale detector used for benchmarking the backbone."""
-
-    def __init__(self, num_classes: int = 80, variant: str = "micro", input_size: int = 224) -> None:
-        super().__init__()
-        self.backbone = MicroSignBackbone(variant=variant, return_stages=[2, 3, 4], input_size=input_size)
         channels = self.backbone.out_channels
         self.det_heads = nn.ModuleDict(
             {
-                "small": DetectionHead(channels[2], num_classes=num_classes),
-                "medium": DetectionHead(channels[3], num_classes=num_classes),
-                "large": DetectionHead(channels[4], num_classes=num_classes),
+                "small": nn.Conv2d(channels[2], num_classes + 5, 1),
+                "medium": nn.Conv2d(channels[3], num_classes + 5, 1),
+                "large": nn.Conv2d(channels[4], num_classes + 5, 1),
             }
         )
 
     def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:  # noqa: D401
-        features = self.backbone(x)
-        assert isinstance(features, dict)
+        feats = self.backbone(x)
+        assert isinstance(feats, dict)
         return {
-            "small": self.det_heads["small"](features["C3"]),
-            "medium": self.det_heads["medium"](features["C4"]),
-            "large": self.det_heads["large"](features["C5"]),
+            "small": self.det_heads["small"](feats["C3"]),
+            "medium": self.det_heads["medium"](feats["C4"]),
+            "large": self.det_heads["large"](feats["C5"]),
         }
 
 
 __all__ = [
     "CONFIGS",
-    "BackboneConfig",
-    "MicroSignBackbone",
-    "MicroSignDetector",
+    "EdgeBackboneConfig",
+    "_compute_edge_channels",
+    "MicroSignEdgeBackbone",
+    "MicroSignEdgeDetector",
 ]

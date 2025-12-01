@@ -23,7 +23,7 @@ def load_yaml(path: Path):
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate MicroSign-Net or TorchVision checkpoints")
+    parser = argparse.ArgumentParser(description="Evaluate MicroSign-Edge or TorchVision checkpoints")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to checkpoint (.pth)")
     parser.add_argument("--config", type=str, default="microbackbone/config/model.yaml")
     parser.add_argument("--dataset-config", type=str, default="microbackbone/config/datasets.yaml")
@@ -62,9 +62,9 @@ def evaluate() -> None:
     data.setup()
 
     checkpoint = torch.load(args.checkpoint, map_location="cpu")
-    arch = (args.arch or checkpoint.get("arch", "microbackbone")).lower()
+    arch = (args.arch or checkpoint.get("arch", "microsign_edge")).lower()
 
-    if arch == "microbackbone":
+    if arch in {"microsign_edge", "microbackbone"}:
         model = create_model(
             task=cfg["task"],
             num_classes=cfg["num_classes"],
