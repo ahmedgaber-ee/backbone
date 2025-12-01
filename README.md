@@ -52,6 +52,23 @@ python -m microbackbone.evaluation.test \
 python -m microbackbone.evaluation.benchmark --config microbackbone/config/model.yaml --input-size 32 --runs 200
 ```
 
+### Train + Compare TorchVision backbones
+Single command to train/fine-tune supported TorchVision models and compare them with your MicroSign-Net checkpoint:
+```bash
+python -m microbackbone.evaluation.compare_models \
+  --custom-weights outputs/checkpoints/microsign_micro_best.pth \
+  --dataset-config microbackbone/config/datasets.yaml \
+  --input-size 3 32 32 \
+  --device cpu \
+  --all \
+  --train --epochs 5 --learning-rate 1e-3 --weight-decay 1e-4 --pretrained
+```
+Notes:
+- Add `--train-custom` if you want to (re)train MicroSign-Net in the same run instead of loading weights.
+- Use `--custom-variant`/`--custom-num-classes` to align the custom checkpoint architecture (prevents shape mismatch errors).
+- Results include params, FLOPs, latency, throughput, file size, and top-1 accuracy saved to `outputs/benchmarks/compare_models.csv`.
+
+
 ## Exporting (TorchScript / ONNX / TFLite)
 ```bash
 python -m microbackbone.evaluation.export_tflite \
