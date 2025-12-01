@@ -113,3 +113,54 @@ See `deployment/esp32/instructions.md`. Export an int8 TFLite model, convert to 
 ## Notes
 - Adjust `microbackbone/config/model.yaml` to change variants or dataset classes.
 - Use `microbackbone/config/datasets.yaml` to point to custom folders or tweak batch size.
+
+## Pruning and Quantization
+Use the standalone `model-tools` CLI to prune or quantize checkpoints without changing existing training workflows.
+
+### Overview
+- **Pruning**: structured (filter/channel) or unstructured (magnitude) sparsification using PyTorch prune utilities.
+- **Quantization**: dynamic (no calibration) or static (with calibration data) for reduced size and latency.
+- Outputs reuse the original checkpoint metadata and save to the path you provide.
+
+### CLI usage
+Prune a model:
+```bash
+python -m microbackbone.tools.model_tools prune \
+  --input-model outputs/checkpoints/resnet18_best.pth \
+  --output-model outputs/pruned/resnet18_pruned.pth \
+  --pruning-type structured \
+  --pruning-ratio 0.2
+```
+
+Quantize a model (dynamic):
+```bash
+python -m microbackbone.tools.model_tools quantize \
+  --input-model outputs/checkpoints/microsign_micro_best.pth \
+  --output-model outputs/quantized/microsign_int8.pth \
+  --quantization-type dynamic
+```
+
+Quantize with static calibration:
+```bash
+python -m microbackbone.tools.model_tools quantize \
+  --input-model outputs/checkpoints/resnet18_best.pth \
+  --output-model outputs/quantized/resnet18_static_int8.pth \
+  --quantization-type static \
+  --calibration-data /path/to/calibration/folder \
+  --input-size 32 \
+  --batch-size 32
+```
+
+### Recommended settings
+- **Unstructured pruning**: `--pruning-type=unstructured --pruning-ratio=0.3` (good sparsity/accuracy trade-off).
+- **Structured pruning**: `--pruning-type=structured --pruning-ratio=0.2` (hardware-friendly for CNNs).
+- **Workflow**: apply moderate pruning (20–30%), fine-tune 3–5 epochs, then export.
+- **Dynamic quantization**: `--quantization-type=dynamic` (great general-purpose option, no calibration needed).
+- **Static quantization**: `--quantization-type=static` with 200–500 representative samples via `--calibration-data`.
+- Combine pruning then quantization for further size/speed gains; validate accuracy after each step.
+
+### Outputs
+- Saved checkpoints mirror the input format (state dict + metadata) at `--output-model`.
+- Logs describe pruning/quantization steps according to `--log-level`.
+- Calibrated static quantization consumes the provided sample folder but leaves it unchanged.
+
