@@ -14,10 +14,17 @@ try:
 except ImportError:  # pragma: no cover
     yaml = None
 
+# ------------------------------------------------------------
+# Clean THOP import block (no debug prints)
+# ------------------------------------------------------------
 try:
-    from thop import profile  # type: ignore
-except Exception:  # pragma: no cover
-    profile = None
+    import thop
+    profile = thop.profile
+except Exception:
+    try:
+        from ultralytics_thop import profile
+    except Exception:
+        profile = None
 
 
 def load_yaml(path: Path):
@@ -25,6 +32,14 @@ def load_yaml(path: Path):
         raise ImportError("pyyaml is required for loading config files")
     with path.open("r") as f:
         return yaml.safe_load(f)
+
+
+def _clear_thop_attributes(model):
+    """Remove THOP attributes to avoid duplicate-attribute errors."""
+    for m in model.modules():
+        for attr in ("total_ops", "total_params", "total_macs"):
+            if hasattr(m, attr):
+                delattr(m, attr)
 
 
 def parse_args() -> argparse.Namespace:
@@ -53,18 +68,22 @@ def benchmark() -> None:
         model = create_torchvision_model(
             name=arch, num_classes=cfg["num_classes"], pretrained=args.pretrained, device=device
         )
-    model.eval()
 
+    model.eval()
     dummy = torch.randn(1, 3, args.input_size, args.input_size, device=device)
 
     params = sum(p.numel() for p in model.parameters())
     flops = None
+
+    # FLOPs profiling (safe)
     if profile is not None:
         try:
+            _clear_thop_attributes(model)
             flops, _ = profile(model, inputs=(dummy,), verbose=False)
         except Exception:
             flops = None
 
+    # Latency & FPS
     with torch.no_grad():
         for _ in range(args.warmup):
             _ = model(dummy)
@@ -73,6 +92,7 @@ def benchmark() -> None:
             _ = model(dummy)
         torch.cuda.synchronize() if device.type == "cuda" else None
         elapsed = time.perf_counter() - start
+
     avg_ms = (elapsed / args.runs) * 1000
     fps = args.runs / elapsed
 
@@ -81,7 +101,7 @@ def benchmark() -> None:
     if flops is not None:
         print(f"FLOPs (approx): {flops/1e6:.2f} MFLOPs")
     else:
-        print("FLOPs: thop not installed, skipped")
+        print("FLOPs: not available (THOP error or unsupported model)")
     print(f"Latency: {avg_ms:.2f} ms | Throughput: {fps:.2f} FPS")
 
 
