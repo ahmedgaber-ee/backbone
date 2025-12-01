@@ -31,13 +31,28 @@ pip install -r requirements.txt
 ```
 
 ## Training
+Train MicroSign-Net (default) or swap in a TorchVision backbone via `--arch`:
 ```bash
+# MicroSign-Net
 python -m microbackbone.training.train \
   --config microbackbone/config/model.yaml \
   --dataset-config microbackbone/config/datasets.yaml \
   --output-dir outputs
+
+# TorchVision examples
+python -m microbackbone.training.train --arch resnet18 --pretrained \
+  --config microbackbone/config/model.yaml --dataset-config microbackbone/config/datasets.yaml --output-dir outputs
+
+python -m microbackbone.training.train --arch mobilenet_v3_small --pretrained \
+  --config microbackbone/config/model.yaml --dataset-config microbackbone/config/datasets.yaml --output-dir outputs
+
+python -m microbackbone.training.train --arch efficientnet_b0 --pretrained \
+  --config microbackbone/config/model.yaml --dataset-config microbackbone/config/datasets.yaml --output-dir outputs
+
+python -m microbackbone.training.train --arch convnext_tiny --pretrained \
+  --config microbackbone/config/model.yaml --dataset-config microbackbone/config/datasets.yaml --output-dir outputs
 ```
-Checkpoints are written to `outputs/checkpoints/`.
+Checkpoints are written to `outputs/checkpoints/` with the architecture name embedded in the filename.
 
 ## Testing
 ```bash
@@ -52,21 +67,27 @@ python -m microbackbone.evaluation.test \
 python -m microbackbone.evaluation.benchmark --config microbackbone/config/model.yaml --input-size 32 --runs 200
 ```
 
-### Train + Compare TorchVision backbones
-Single command to train/fine-tune supported TorchVision models and compare them with your MicroSign-Net checkpoint:
+### Compare trained and pretrained models
+Run side-by-side benchmarks for your checkpoints and TorchVision backbones (pretrained or scratch):
 ```bash
+# Compare multiple trained checkpoints
 python -m microbackbone.evaluation.compare_models \
-  --custom-weights outputs/checkpoints/microsign_micro_best.pth \
+  --checkpoints outputs/checkpoints/microsign_micro_best.pth outputs/checkpoints/resnet18_best.pth \
   --dataset-config microbackbone/config/datasets.yaml \
   --input-size 3 32 32 \
-  --device cpu \
-  --all \
-  --train --epochs 5 --learning-rate 1e-3 --weight-decay 1e-4 --pretrained
+  --device cpu
+
+# Compare trained checkpoint vs. pretrained TorchVision models
+python -m microbackbone.evaluation.compare_models \
+  --checkpoints outputs/checkpoints/microsign_micro_best.pth \
+  --models resnet50,mobilenet_v3_large \
+  --pretrained \
+  --dataset-config microbackbone/config/datasets.yaml
+
+# Benchmark all supported TorchVision backbones (pretrained) without checkpoints
+python -m microbackbone.evaluation.compare_models --all --pretrained --dataset-config microbackbone/config/datasets.yaml
 ```
-Notes:
-- Add `--train-custom` if you want to (re)train MicroSign-Net in the same run instead of loading weights.
-- Use `--custom-variant`/`--custom-num-classes` to align the custom checkpoint architecture (prevents shape mismatch errors).
-- Results include params, FLOPs, latency, throughput, file size, and top-1 accuracy saved to `outputs/benchmarks/compare_models.csv`.
+Outputs are printed as text + markdown tables and saved as `outputs/benchmarks/compare_models.csv` (create the directory if it does not exist). Metrics include params, FLOPs, latency, throughput, file size, and top-1 accuracy on the validation split defined by your dataset config.
 
 
 ## Exporting (TorchScript / ONNX / TFLite)

@@ -12,7 +12,7 @@ from torch.cuda.amp import GradScaler, autocast
 from tqdm.auto import tqdm
 
 from microbackbone.data.datamodule import MicroBackboneDataModule
-from microbackbone.models.utils import accuracy, create_model
+from microbackbone.models.utils import accuracy, create_model, create_torchvision_model
 from microbackbone.training.loss_functions import classification_loss
 
 try:
@@ -29,12 +29,19 @@ def load_yaml(path: Path) -> Dict:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train MicroSign-Net")
+    parser = argparse.ArgumentParser(description="Train MicroSign-Net or TorchVision models")
     parser.add_argument("--config", type=str, default="microbackbone/config/model.yaml")
     parser.add_argument("--dataset-config", type=str, default="microbackbone/config/datasets.yaml")
     parser.add_argument("--default-config", type=str, default="microbackbone/config/defaults.yaml")
     parser.add_argument("--output-dir", type=str, default="outputs")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--arch",
+        type=str,
+        default="microbackbone",
+        help="Model architecture (microbackbone or TorchVision model name, e.g., resnet18)",
+    )
+    parser.add_argument("--pretrained", action="store_true", help="Use pretrained TorchVision weights when available")
     return parser.parse_args()
 
 
@@ -57,12 +64,21 @@ def train() -> None:
     )
     data.setup()
 
-    model = create_model(
-        task=cfg["task"],
-        num_classes=cfg["num_classes"],
-        variant=cfg["variant"],
-        input_size=data_cfg["input_size"],
-    ).to(device)
+    arch = args.arch.lower()
+    if arch == "microbackbone":
+        model = create_model(
+            task=cfg["task"],
+            num_classes=cfg["num_classes"],
+            variant=cfg["variant"],
+            input_size=data_cfg["input_size"],
+        ).to(device)
+    else:
+        model = create_torchvision_model(
+            name=arch,
+            num_classes=cfg["num_classes"],
+            pretrained=args.pretrained,
+            device=device,
+        )
 
     criterion = classification_loss(cfg["num_classes"], cfg.get("label_smoothing", 0.0))
     optimizer = optim.AdamW(
@@ -147,13 +163,16 @@ def train() -> None:
             best_val = val_acc
             checkpoint = {
                 "epoch": epoch + 1,
+                "arch": arch,
+                "variant": cfg.get("variant", "micro"),
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "val_acc": val_acc,
                 "config": cfg,
                 "data_config": data_cfg,
             }
-            torch.save(checkpoint, ckpt_dir / f"microsign_{cfg['variant']}_best.pth")
+            ckpt_name = f"{arch}_best.pth" if arch != "microbackbone" else f"microsign_{cfg['variant']}_best.pth"
+            torch.save(checkpoint, ckpt_dir / ckpt_name)
 
     (output_dir / "history.json").write_text(json.dumps(history, indent=2))
 

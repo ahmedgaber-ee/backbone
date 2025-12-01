@@ -4,6 +4,8 @@ from __future__ import annotations
 from typing import Dict, Iterable, Tuple
 
 import torch
+from torch import nn
+from torchvision import models
 
 from .backbone import MicroSignBackbone, MicroSignDetector
 
@@ -42,6 +44,63 @@ def create_model(
     return model
 
 
+# TorchVision registry for convenient creation
+TORCHVISION_MODELS = {
+    "resnet18": models.resnet18,
+    "resnet34": models.resnet34,
+    "resnet50": models.resnet50,
+    "mobilenet_v2": models.mobilenet_v2,
+    "mobilenet_v3_small": models.mobilenet_v3_small,
+    "mobilenet_v3_large": models.mobilenet_v3_large,
+    "shufflenet_v2_x0_5": models.shufflenet_v2_x0_5,
+    "shufflenet_v2_x1_0": models.shufflenet_v2_x1_0,
+    "efficientnet_b0": models.efficientnet_b0,
+    "efficientnet_b1": models.efficientnet_b1,
+    "convnext_tiny": models.convnext_tiny,
+}
+
+
+def replace_classifier(model: nn.Module, name: str, num_classes: int) -> nn.Module:
+    """Adjust the classifier head of a TorchVision model to match num_classes."""
+    if name.startswith("resnet"):
+        in_features = model.fc.in_features
+        model.fc = nn.Linear(in_features, num_classes)
+    elif name.startswith("mobilenet_v2"):
+        in_features = model.classifier[-1].in_features
+        model.classifier[-1] = nn.Linear(in_features, num_classes)
+    elif name.startswith("mobilenet_v3"):
+        in_features = model.classifier[-1].in_features
+        model.classifier[-1] = nn.Linear(in_features, num_classes)
+    elif name.startswith("shufflenet_v2"):
+        in_features = model.fc.in_features
+        model.fc = nn.Linear(in_features, num_classes)
+    elif name.startswith("efficientnet_b"):
+        in_features = model.classifier[1].in_features
+        model.classifier[1] = nn.Linear(in_features, num_classes)
+    elif name.startswith("convnext"):
+        in_features = model.classifier[2].in_features
+        model.classifier[2] = nn.Linear(in_features, num_classes)
+    else:  # pragma: no cover
+        raise ValueError(f"Unhandled classifier adaptation for {name}")
+    return model
+
+
+def create_torchvision_model(
+    name: str,
+    num_classes: int,
+    pretrained: bool,
+    device: torch.device,
+) -> nn.Module:
+    if name not in TORCHVISION_MODELS:
+        raise ValueError(f"Unsupported TorchVision model: {name}")
+    weight_arg = "DEFAULT" if pretrained else None
+    model_fn = TORCHVISION_MODELS[name]
+    model = model_fn(weights=weight_arg)
+    model = replace_classifier(model, name, num_classes)
+    model.to(device)
+    return model
+
+
 def accuracy(output: torch.Tensor, target: torch.Tensor, topk: Tuple[int, ...] = (1,)) -> list[torch.Tensor]:
     """Computes accuracy over the k top predictions."""
     with torch.no_grad():
@@ -57,4 +116,10 @@ def accuracy(output: torch.Tensor, target: torch.Tensor, topk: Tuple[int, ...] =
         return res
 
 
-__all__ = ["create_model", "accuracy"]
+__all__ = [
+    "create_model",
+    "create_torchvision_model",
+    "replace_classifier",
+    "accuracy",
+    "TORCHVISION_MODELS",
+]
