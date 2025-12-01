@@ -1,0 +1,10 @@
+torch>=2.1.0
+torchvision>=0.16.0
+pyyaml
+pillow
+opencv-python
+thop
+onnx
+onnxruntime
+tensorflow
+tqdm
