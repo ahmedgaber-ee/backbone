@@ -85,6 +85,14 @@ def replace_classifier(model: nn.Module, name: str, num_classes: int) -> nn.Modu
     return model
 
 
+def _resolve_weights_argument(model_name: str, pretrained: bool):
+    """Return a weights argument compatible with both old/new TorchVision APIs."""
+    weights_enum = getattr(models, f"{model_name.upper()}_Weights", None)
+    if weights_enum is None:
+        return pretrained  # likely older API expecting `pretrained` bool
+    return weights_enum.DEFAULT if pretrained else None
+
+
 def create_torchvision_model(
     name: str,
     num_classes: int,
@@ -93,9 +101,16 @@ def create_torchvision_model(
 ) -> nn.Module:
     if name not in TORCHVISION_MODELS:
         raise ValueError(f"Unsupported TorchVision model: {name}")
-    weight_arg = "DEFAULT" if pretrained else None
+
     model_fn = TORCHVISION_MODELS[name]
-    model = model_fn(weights=weight_arg)
+    weight_arg = _resolve_weights_argument(name, pretrained)
+
+    try:
+        model = model_fn(weights=weight_arg)
+    except TypeError:
+        # Fallback for TorchVision < 0.13 that expects `pretrained` instead of `weights`
+        model = model_fn(pretrained=bool(pretrained))
+
     model = replace_classifier(model, name, num_classes)
     model.to(device)
     return model
