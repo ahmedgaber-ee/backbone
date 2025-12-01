@@ -1,4 +1,4 @@
-"""Evaluation script for MicroSign-Net."""
+"""Evaluation script for MicroSign-Net and TorchVision backbones."""
 from __future__ import annotations
 
 import argparse
@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 
 from microbackbone.data.datamodule import MicroBackboneDataModule
-from microbackbone.models.utils import accuracy, create_model
+from microbackbone.models.utils import accuracy, create_model, create_torchvision_model
 
 try:
     import yaml
@@ -23,11 +23,25 @@ def load_yaml(path: Path):
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate MicroSign-Net")
+    parser = argparse.ArgumentParser(description="Evaluate MicroSign-Net or TorchVision checkpoints")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to checkpoint (.pth)")
     parser.add_argument("--config", type=str, default="microbackbone/config/model.yaml")
     parser.add_argument("--dataset-config", type=str, default="microbackbone/config/datasets.yaml")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--arch",
+        type=str,
+        default=None,
+        help=(
+            "Optional override for backbone architecture; when omitted, the script reads the arch "
+            "stored inside the checkpoint. Use TorchVision model names such as resnet18, mobilenet_v3_small, etc."
+        ),
+    )
+    parser.add_argument(
+        "--pretrained",
+        action="store_true",
+        help="Use DEFAULT TorchVision weights before loading the checkpoint when evaluating TorchVision models",
+    )
     return parser.parse_args()
 
 
@@ -47,13 +61,24 @@ def evaluate() -> None:
     )
     data.setup()
 
-    model = create_model(
-        task=cfg["task"],
-        num_classes=cfg["num_classes"],
-        variant=cfg["variant"],
-        input_size=data_cfg["input_size"],
-    )
     checkpoint = torch.load(args.checkpoint, map_location="cpu")
+    arch = (args.arch or checkpoint.get("arch", "microbackbone")).lower()
+
+    if arch == "microbackbone":
+        model = create_model(
+            task=cfg["task"],
+            num_classes=cfg["num_classes"],
+            variant=cfg["variant"],
+            input_size=data_cfg["input_size"],
+        )
+    else:
+        model = create_torchvision_model(
+            name=arch,
+            num_classes=cfg["num_classes"],
+            pretrained=args.pretrained,
+            device=torch.device("cpu"),
+        )
+
     state_dict = checkpoint.get("model_state_dict", checkpoint)
     model.load_state_dict(state_dict, strict=False)
     model.to(device)

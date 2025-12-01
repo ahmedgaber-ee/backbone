@@ -60,11 +60,25 @@ python -m microbackbone.evaluation.test \
   --checkpoint outputs/checkpoints/microsign_micro_best.pth \
   --config microbackbone/config/model.yaml \
   --dataset-config microbackbone/config/datasets.yaml
+
+# Evaluate a TorchVision checkpoint (arch auto-detected from checkpoint metadata)
+python -m microbackbone.evaluation.test \
+  --checkpoint outputs/checkpoints/resnet18_best.pth \
+  --arch resnet18 --pretrained \
+  --config microbackbone/config/model.yaml \
+  --dataset-config microbackbone/config/datasets.yaml
 ```
 
 ## Benchmarking
 ```bash
-python -m microbackbone.evaluation.benchmark --config microbackbone/config/model.yaml --input-size 32 --runs 200
+# MicroSign-Net
+python -m microbackbone.evaluation.benchmark \
+  --config microbackbone/config/model.yaml --input-size 32 --runs 200
+
+# TorchVision backbone (pretrained head replaced for dataset classes)
+python -m microbackbone.evaluation.benchmark \
+  --arch resnet18 --pretrained \
+  --config microbackbone/config/model.yaml --input-size 32 --runs 200
 ```
 
 ### Compare trained and pretrained models
@@ -88,6 +102,7 @@ python -m microbackbone.evaluation.compare_models \
 python -m microbackbone.evaluation.compare_models --all --pretrained --dataset-config microbackbone/config/datasets.yaml
 ```
 Outputs are printed as text + markdown tables and saved as `outputs/benchmarks/compare_models.csv` (create the directory if it does not exist). Metrics include params, FLOPs, latency, throughput, file size, and top-1 accuracy on the validation split defined by your dataset config.
+TorchVision-only comparisons are supported (omit `--checkpoints` and use `--models`/`--all`), and the dataset config drives the evaluation dataloaders and `num_classes` when adapting classifier heads.
 
 
 ## Exporting (TorchScript / ONNX / TFLite)

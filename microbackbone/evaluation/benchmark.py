@@ -1,4 +1,4 @@
-"""Benchmark FLOPs, params, and inference speed."""
+"""Benchmark FLOPs, params, and inference speed for MicroSign-Net or TorchVision backbones."""
 from __future__ import annotations
 
 import argparse
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 
-from microbackbone.models.utils import create_model
+from microbackbone.models.utils import create_model, create_torchvision_model
 
 try:
     import yaml
@@ -28,12 +28,14 @@ def load_yaml(path: Path):
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Benchmark MicroSign-Net")
+    parser = argparse.ArgumentParser(description="Benchmark MicroSign-Net or TorchVision models")
     parser.add_argument("--config", type=str, default="microbackbone/config/model.yaml")
+    parser.add_argument("--arch", type=str, default="microbackbone", help="Backbone name (microbackbone or TorchVision model)")
     parser.add_argument("--input-size", type=int, default=224)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--runs", type=int, default=50)
+    parser.add_argument("--pretrained", action="store_true", help="Use DEFAULT TorchVision weights when available")
     return parser.parse_args()
 
 
@@ -42,9 +44,15 @@ def benchmark() -> None:
     cfg = load_yaml(Path(args.config))
 
     device = torch.device(args.device)
-    model = create_model(
-        task=cfg["task"], num_classes=cfg["num_classes"], variant=cfg["variant"], input_size=args.input_size
-    ).to(device)
+    arch = args.arch.lower()
+    if arch == "microbackbone":
+        model = create_model(
+            task=cfg["task"], num_classes=cfg["num_classes"], variant=cfg["variant"], input_size=args.input_size
+        ).to(device)
+    else:
+        model = create_torchvision_model(
+            name=arch, num_classes=cfg["num_classes"], pretrained=args.pretrained, device=device
+        )
     model.eval()
 
     dummy = torch.randn(1, 3, args.input_size, args.input_size, device=device)
