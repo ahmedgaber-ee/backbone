@@ -1,6 +1,7 @@
 """Core building blocks for the MicroSign-Edge backbone family."""
 from __future__ import annotations
 
+import math
 from typing import List, Tuple
 
 import torch
@@ -52,6 +53,16 @@ def _shift_groups(x: torch.Tensor) -> torch.Tensor:
     down = F.pad(split[2], (0, 0, 0, 1))[:, :, 1:, :]
     right = F.pad(split[3], (0, 1, 0, 0))[:, :, :, 1:]
     return torch.cat([up, left, down, right], dim=1)
+
+
+def _nearest_divisor(value: int, target: int) -> int:
+    """Return the largest divisor of ``value`` that is <= target (>=1)."""
+
+    target = max(1, target)
+    for g in range(target, 0, -1):
+        if value % g == 0:
+            return g
+    return 1
 
 
 class ReparamShiftDepthwiseBlock(nn.Module):
@@ -118,8 +129,10 @@ class ReparamShiftDepthwiseBlock(nn.Module):
         self.merge_bn = nn.BatchNorm2d(self.mid_channels)
 
         # Grouped SE-like gating
-        groups = max(1, self.mid_channels // 16)
+        groups = _nearest_divisor(self.mid_channels, max(1, self.mid_channels // 16))
         reduced = max(self.mid_channels // 8, 4)
+        # ensure reduced channels are divisible by groups for grouped 1x1s
+        reduced = int(math.ceil(reduced / groups) * groups)
         self.se_reduce = nn.Conv2d(self.mid_channels, reduced, 1, groups=groups)
         self.se_expand = nn.Conv2d(reduced, self.mid_channels, 1, groups=groups)
 
