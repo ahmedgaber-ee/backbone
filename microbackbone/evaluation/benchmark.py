@@ -37,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--runs", type=int, default=50)
+    parser.add_argument("--weights", type=str, default=None, help="Optional checkpoint to load before benchmarking")
     parser.add_argument("--pretrained", action="store_true", help="Use DEFAULT TorchVision weights when available")
     parser.add_argument(
         "--reparam-edge",
@@ -56,6 +57,10 @@ def benchmark() -> None:
         model = create_model(
             task=cfg["task"], num_classes=cfg["num_classes"], variant=cfg["variant"], input_size=args.input_size
         ).to(device)
+        if args.weights:
+            state = torch.load(args.weights, map_location=device)
+            state = state.get("model_state_dict", state)
+            model.load_state_dict(state, strict=False)
         if args.reparam_edge:
             try:
                 from microbackbone.models.modules import reparameterize_microsign_edge
@@ -67,6 +72,10 @@ def benchmark() -> None:
         model = create_torchvision_model(
             name=arch, num_classes=cfg["num_classes"], pretrained=args.pretrained, device=device
         )
+        if args.weights:
+            state = torch.load(args.weights, map_location=device)
+            state = state.get("model_state_dict", state)
+            model.load_state_dict(state, strict=False)
     model.eval()
 
     dummy = torch.randn(1, 3, args.input_size, args.input_size, device=device)
@@ -91,6 +100,7 @@ def benchmark() -> None:
     fps = args.runs / elapsed
 
     print("Benchmark results")
+    print(f"Architecture: {arch}")
     print(f"Parameters: {params:,} ({params * 4 / (1024 * 1024):.2f} MB)")
     if flops is not None:
         print(f"FLOPs (approx): {flops/1e6:.2f} MFLOPs")

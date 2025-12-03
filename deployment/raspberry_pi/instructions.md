@@ -17,10 +17,36 @@ Place one of the exported artifacts into this folder:
 python3 infer.py --image path/to/test.jpg --model model.torchscript.pt --variant micro --num-classes 10 --input-size 32 --dataset cifar10 --device cpu
 ```
 
-## 4. Measure FPS
-Use the benchmark helper from the repo root:
+## 4. Measure FPS / Benchmark (MicroSign-Edge or TorchVision)
+Use the benchmark helper from the repo root. It now accepts both MicroSign-Edge and TorchVision architectures and can load local checkpoints:
 ```bash
-python3 -m microbackbone.evaluation.benchmark --config microbackbone/config/model.yaml --input-size 32 --device cpu --runs 200
+# MicroSign-Edge (optionally load checkpoint)
+python3 -m microbackbone.evaluation.benchmark \
+  --config microbackbone/config/model.yaml \
+  --arch microsign_edge \
+  --input-size 32 \
+  --device cpu \
+  --runs 200 \
+  --weights outputs/checkpoints/best.pth \
+  --reparam-edge
+
+# TorchVision pretrained backbone (e.g., ResNet-18)
+python3 -m microbackbone.evaluation.benchmark \
+  --config microbackbone/config/model.yaml \
+  --arch resnet18 \
+  --pretrained \
+  --input-size 224 \
+  --device cpu \
+  --runs 200
+
+# TorchVision with your fine-tuned checkpoint
+python3 -m microbackbone.evaluation.benchmark \
+  --config microbackbone/config/model.yaml \
+  --arch mobilenet_v3_small \
+  --input-size 224 \
+  --device cpu \
+  --runs 200 \
+  --weights outputs/checkpoints/mobilenet_v3_small_best.pth
 ```
 
 ## 5. Enable Camera Inference
