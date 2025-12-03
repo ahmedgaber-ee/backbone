@@ -68,6 +68,7 @@ def evaluate() -> None:
     cfg = load_yaml(Path(args.config))
     data_cfg = load_yaml(Path(args.dataset_config))
 
+    torch.manual_seed(data_cfg.get("seed", 42))
     device = torch.device(args.device)
     data = MicroBackboneDataModule(
         dataset=data_cfg["dataset"],
@@ -76,6 +77,7 @@ def evaluate() -> None:
         num_workers=data_cfg["num_workers"],
         input_size=data_cfg["input_size"],
         train_split=data_cfg.get("train_split", 0.9),
+        seed=data_cfg.get("seed", 42),
     )
     data.setup()
 
