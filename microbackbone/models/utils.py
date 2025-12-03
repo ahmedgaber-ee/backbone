@@ -46,17 +46,54 @@ def create_model(
 
 # TorchVision registry for convenient creation
 TORCHVISION_MODELS = {
-    "resnet18": models.resnet18,
-    "resnet34": models.resnet34,
+    # -------------------------------
+    # Baseline ResNets (reference)
+    # -------------------------------
+    "resnet18": models.resnet18,              # ★ recommended
+    "resnet34": models.resnet34,              # ★ recommended
     "resnet50": models.resnet50,
-    "mobilenet_v2": models.mobilenet_v2,
-    "mobilenet_v3_small": models.mobilenet_v3_small,
-    "mobilenet_v3_large": models.mobilenet_v3_large,
-    "shufflenet_v2_x0_5": models.shufflenet_v2_x0_5,
-    "shufflenet_v2_x1_0": models.shufflenet_v2_x1_0,
-    "efficientnet_b0": models.efficientnet_b0,
+
+    # -------------------------------
+    # MobileNet family
+    # -------------------------------
+    "mobilenet_v2": models.mobilenet_v2,      # ★ recommended
+    "mobilenet_v3_small": models.mobilenet_v3_small,  # ★ recommended
+    "mobilenet_v3_large": models.mobilenet_v3_large,  # ★ recommended
+
+    # -------------------------------
+    # ShuffleNet family
+    # -------------------------------
+    "shufflenet_v2_x0_5": models.shufflenet_v2_x0_5,  # ★ recommended
+    "shufflenet_v2_x1_0": models.shufflenet_v2_x1_0,  # ★ recommended
+
+    # -------------------------------
+    # MNASNet family (very important for tiny models)
+    # -------------------------------
+    # "mnasnet0_25": models.mnasnet0_25,        # ★ recommended (tiny baseline)
+    "mnasnet0_5": models.mnasnet0_5,          # ★ recommended
+    "mnasnet0_75": models.mnasnet0_75,
+    "mnasnet1_3": models.mnasnet1_3,          # ★ recommended
+
+    # -------------------------------
+    # EfficientNet family
+    # -------------------------------
+    "efficientnet_b0": models.efficientnet_b0,    # ★ recommended
     "efficientnet_b1": models.efficientnet_b1,
+
+    # -------------------------------
+    # ConvNeXt (optional)
+    # -------------------------------
     "convnext_tiny": models.convnext_tiny,
+
+    # -------------------------------
+    # Additional OPTIONAL lightweight models
+    # -------------------------------
+    "squeezenet1_0": models.squeezenet1_0,
+    "squeezenet1_1": models.squeezenet1_1,
+    "googlenet": models.googlenet,
+    "densenet121": models.densenet121,
+    "regnet_y_400mf": models.regnet_y_400mf,
+    "regnet_y_800mf": models.regnet_y_800mf,
 }
 
 
