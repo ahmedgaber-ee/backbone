@@ -162,6 +162,10 @@ def benchmark_model(
     flops_m = flops / 1e6 if flops is not None else None
     metrics = metrics or {}
 
+    def _fmt_metric(key: str) -> str:
+        value = metrics.get(key)
+        return f"{value:.2f}" if value is not None else "N/A"
+
     result: BenchmarkResult = {
         "Model Name": name,
         "Params": f"{params_m:.2f}M",
@@ -169,11 +173,11 @@ def benchmark_model(
         "Latency (ms)": f"{latency_ms:.2f}",
         "Throughput (img/s)": f"{throughput:.2f}",
         "File Size (MB)": f"{size_mb:.2f}",
-        "Top-1 Acc (%)": f"{metrics.get('top1', 0.0):.2f}" if "top1" in metrics else "N/A",
-        "Top-5 Acc (%)": f"{metrics.get('top5', 0.0):.2f}" if "top5" in metrics else "N/A",
-        "Precision (%)": f"{metrics.get('precision', 0.0):.2f}" if "precision" in metrics else "N/A",
-        "Recall (%)": f"{metrics.get('recall', 0.0):.2f}" if "recall" in metrics else "N/A",
-        "F1 Score (%)": f"{metrics.get('f1', 0.0):.2f}" if "f1" in metrics else "N/A",
+        "Top-1 Acc (%)": _fmt_metric("top1"),
+        "Top-5 Acc (%)": _fmt_metric("top5"),
+        "Precision (%)": _fmt_metric("precision"),
+        "Recall (%)": _fmt_metric("recall"),
+        "F1 Score (%)": _fmt_metric("f1"),
     }
     return result
 
@@ -345,18 +349,14 @@ def main() -> None:
         if not ckpt_path.exists():
             print(f"[WARN] checkpoint not found: {ckpt_path}")
             continue
-        model, arch, _, recorded_acc = load_checkpoint_model(
+        model, arch, _, _ = load_checkpoint_model(
             ckpt_path,
             device=device,
             default_num_classes=num_classes,
             input_size=input_shape,
             fallback_cfg=model_cfg,
         )
-        metrics = (
-            {"top1": float(recorded_acc)}
-            if recorded_acc is not None
-            else evaluate_metrics(model, dm.val_dataloader(), device)
-        )
+        metrics = evaluate_metrics(model, dm.val_dataloader(), device)
         results.append(
             benchmark_model(
                 name=f"{ckpt_path.stem} ({arch})",
