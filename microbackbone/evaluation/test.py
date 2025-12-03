@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import torch
 
 from microbackbone.data.datamodule import MicroBackboneDataModule
-from microbackbone.models.utils import accuracy, create_model, create_torchvision_model
+from microbackbone.models.utils import create_model, create_torchvision_model
+from microbackbone.training.metrics import (
+    classification_report_from_confusion,
+    topk_accuracy,
+    update_confusion_matrix,
+)
 
 try:
     import yaml
@@ -41,6 +47,18 @@ def parse_args() -> argparse.Namespace:
         "--pretrained",
         action="store_true",
         help="Use DEFAULT TorchVision weights before loading the checkpoint when evaluating TorchVision models",
+    )
+    parser.add_argument(
+        "--metrics",
+        type=str,
+        default="precision,recall,f1",
+        help="Comma-separated extra metrics to report (precision, recall, f1)",
+    )
+    parser.add_argument(
+        "--save-report",
+        type=str,
+        default=None,
+        help="Optional path to save a JSON report with all computed metrics",
     )
     return parser.parse_args()
 
@@ -89,22 +107,64 @@ def evaluate() -> None:
     correct1 = 0
     correct5 = 0
     total = 0
+    num_classes = cfg["num_classes"]
+    confusion = torch.zeros(num_classes, num_classes, dtype=torch.long)
 
     with torch.no_grad():
         for imgs, labels in data.test_dataloader():
             imgs, labels = imgs.to(device, non_blocking=True), labels.to(device, non_blocking=True)
             outputs = model(imgs)
             loss = criterion(outputs, labels)
-            acc1, acc5 = accuracy(outputs, labels, topk=(1, 5))
+            k = 5 if num_classes >= 5 else num_classes
+            acc1, acc5 = topk_accuracy(outputs, labels, topk=(1, k))
+            preds = outputs.argmax(dim=1)
+            update_confusion_matrix(confusion, preds.cpu(), labels.cpu())
+
             test_loss += loss.item() * imgs.size(0)
             correct1 += acc1.item() * imgs.size(0) / 100
             correct5 += acc5.item() * imgs.size(0) / 100
             total += imgs.size(0)
 
-    print(
-        f"Test Loss: {test_loss / total:.4f} | "
-        f"Acc@1: {100 * correct1 / total:.2f}% | Acc@5: {100 * correct5 / total:.2f}%"
-    )
+    metrics_requested = {m.strip().lower() for m in args.metrics.split(",") if m.strip()}
+    report = classification_report_from_confusion(confusion)
+    results = {
+        "loss": test_loss / total,
+        "acc1": 100 * correct1 / total,
+        "acc5": 100 * correct5 / total,
+    }
+
+    if "precision" in metrics_requested:
+        results["precision_macro"] = 100 * report["precision_macro"]
+        results["precision_micro"] = 100 * report["precision_micro"]
+    if "recall" in metrics_requested:
+        results["recall_macro"] = 100 * report["recall_macro"]
+        results["recall_micro"] = 100 * report["recall_micro"]
+    if "f1" in metrics_requested:
+        results["f1_macro"] = 100 * report["f1_macro"]
+        results["f1_micro"] = 100 * report["f1_micro"]
+
+    summary_lines = [
+        f"Loss: {results['loss']:.4f}",
+        f"Acc@1: {results['acc1']:.2f}%",
+        f"Acc@5: {results['acc5']:.2f}%",
+    ]
+    if "precision_macro" in results:
+        summary_lines.append(
+            f"Precision macro/micro: {results['precision_macro']:.2f}% / {results['precision_micro']:.2f}%"
+        )
+    if "recall_macro" in results:
+        summary_lines.append(
+            f"Recall macro/micro: {results['recall_macro']:.2f}% / {results['recall_micro']:.2f}%"
+        )
+    if "f1_macro" in results:
+        summary_lines.append(f"F1 macro/micro: {results['f1_macro']:.2f}% / {results['f1_micro']:.2f}%")
+
+    print(" | ".join(summary_lines))
+
+    if args.save_report:
+        Path(args.save_report).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.save_report).write_text(json.dumps(results, indent=2))
+        print(f"Saved metrics to {args.save_report}")
 
 
 if __name__ == "__main__":

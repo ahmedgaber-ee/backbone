@@ -65,15 +65,20 @@ Checkpoints are written to `outputs/checkpoints/` with the architecture name emb
 python -m microbackbone.evaluation.test \
   --checkpoint outputs/checkpoints/microsignedge_edge_small_best.pth \
   --config microbackbone/config/model.yaml \
-  --dataset-config microbackbone/config/datasets.yaml
+  --dataset-config microbackbone/config/datasets.yaml \
+  --metrics precision,recall,f1 \
+  --save-report outputs/metrics/microsign_edge_eval.json
 
 # Evaluate a TorchVision checkpoint (arch auto-detected from checkpoint metadata)
 python -m microbackbone.evaluation.test \
   --checkpoint outputs/checkpoints/resnet18_best.pth \
   --arch resnet18 --pretrained \
   --config microbackbone/config/model.yaml \
-  --dataset-config microbackbone/config/datasets.yaml
+  --dataset-config microbackbone/config/datasets.yaml \
+  --metrics precision,recall,f1
 ```
+The evaluation command now reports top-1/top-5 accuracy plus macro/micro precision, recall, and F1 (selectable via `--metrics`).
+Use `--save-report` to persist the metrics as a serialized dictionary for later aggregation or dashboards.
 
 ## Benchmarking
 ```bash
