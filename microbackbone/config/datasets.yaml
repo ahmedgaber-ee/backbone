@@ -1,0 +1,6 @@
+dataset: cifar10
+data_root: data
+batch_size: 128
+num_workers: 4
+input_size: 32
+train_split: 0.9
