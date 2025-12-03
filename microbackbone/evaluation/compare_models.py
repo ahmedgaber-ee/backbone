@@ -68,7 +68,7 @@ def parse_args() -> argparse.Namespace:
         "--input-size",
         type=int,
         nargs=3,
-        default=[3, 224, 224],
+        default=None,
         metavar=("C", "H", "W"),
         help="Model input size (channels height width) for benchmarking",
     )
@@ -265,13 +265,23 @@ def save_csv(results: List[BenchmarkResult], output_path: Path) -> None:
 def main() -> None:
     args = parse_args()
     device = torch.device(args.device)
-    input_shape = tuple(args.input_size)
-    dummy = torch.randn(1, *input_shape, device=device)
     save_root = Path(args.save_dir)
     save_root.mkdir(parents=True, exist_ok=True)
 
     data_cfg = load_yaml(Path(args.dataset_config)) if yaml is not None else {}
     model_cfg = load_yaml(Path(args.model_config)) if yaml is not None else {}
+
+    # Align benchmark input size with dataset configuration by default for fair comparisons
+    if args.input_size is not None:
+        input_shape = tuple(args.input_size)
+    else:
+        cfg_size = data_cfg.get("input_size", 224)
+        input_shape = (3, cfg_size, cfg_size)
+
+    seed = data_cfg.get("seed", 42)
+    torch.manual_seed(seed)
+
+    dummy = torch.randn(1, *input_shape, device=device)
 
     batch_size = args.batch_size or data_cfg.get("batch_size", 128)
     num_workers = args.num_workers or data_cfg.get("num_workers", 4)
@@ -286,6 +296,7 @@ def main() -> None:
         num_workers=num_workers,
         input_size=input_size,
         train_split=train_split,
+        seed=seed,
     )
     dm.setup()
     num_classes = _num_classes_from_data(dm)
