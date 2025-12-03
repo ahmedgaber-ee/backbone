@@ -91,10 +91,13 @@ def benchmark() -> None:
     with torch.no_grad():
         for _ in range(args.warmup):
             _ = model(dummy)
+        if device.type == "cuda":
+            torch.cuda.synchronize()
         start = time.perf_counter()
         for _ in range(args.runs):
             _ = model(dummy)
-        torch.cuda.synchronize() if device.type == "cuda" else None
+        if device.type == "cuda":
+            torch.cuda.synchronize()
         elapsed = time.perf_counter() - start
     avg_ms = (elapsed / args.runs) * 1000
     fps = args.runs / elapsed
