@@ -23,6 +23,7 @@ class MicroBackboneDataModule:
         input_size: int,
         train_split: float = 0.9,
         download: bool = True,
+        seed: int | None = None,
     ) -> None:
         self.dataset = dataset.lower()
         self.data_root = Path(data_root)
@@ -31,6 +32,7 @@ class MicroBackboneDataModule:
         self.input_size = input_size
         self.train_split = train_split
         self.download = download
+        self.seed = seed
 
         self.train_set = None
         self.val_set = None
@@ -43,7 +45,8 @@ class MicroBackboneDataModule:
             self.test_set = CIFAR10(root=self.data_root, train=False, download=self.download, transform=test_tfms)
             val_len = int(len(full_train) * (1 - self.train_split))
             train_len = len(full_train) - val_len
-            self.train_set, self.val_set = random_split(full_train, [train_len, val_len])
+            generator = torch.Generator().manual_seed(self.seed) if self.seed is not None else None
+            self.train_set, self.val_set = random_split(full_train, [train_len, val_len], generator=generator)
         else:
             train_dir = self.data_root / "train"
             val_dir = self.data_root / "val"
