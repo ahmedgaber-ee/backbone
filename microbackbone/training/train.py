@@ -61,6 +61,7 @@ def train() -> None:
         num_workers=data_cfg["num_workers"],
         input_size=data_cfg["input_size"],
         train_split=data_cfg.get("train_split", 0.9),
+        seed=default_cfg.get("seed", 42),
     )
     data.setup()
 

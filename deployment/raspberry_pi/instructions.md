@@ -1,26 +1,36 @@
-# Raspberry Pi Deployment Guide
+# Raspberry Pi deployment (CPU/GPU)
 
-## 1. Install Dependencies
+End-to-end steps to run MicroSign-Edge or TorchVision models on Raspberry Pi (Zero/4/5). Examples assume Python 3 is installed.
+
+## 1. Install dependencies
 ```bash
 sudo apt update && sudo apt install -y python3-pip libatlas-base-dev
 pip3 install -r requirements_rpi.txt
 ```
+Pi 5 with GPU drivers: ensure Mesa/Vulkan stack is installed and pass `--device cuda` if CUDA is available; otherwise default to `cpu`.
 
-## 2. Copy Model Artifacts
-Place one of the exported artifacts into this folder:
-- `model.pth` (PyTorch weights)
-- `model.torchscript.pt` (TorchScript)
-- `model.onnx` (optional)
+## 2. Bring your model artifacts
+Copy one of the exported files into `deployment/raspberry_pi/`:
+- `model.torchscript.pt` (fastest startup, recommended)
+- `model.pth` (PyTorch state dict)
+- `model.onnx` (optional for ONNX Runtime if installed)
 
-## 3. Run Static Image Inference
+## 3. Static image inference
 ```bash
-python3 infer.py --image path/to/test.jpg --model model.torchscript.pt --variant micro --num-classes 10 --input-size 32 --dataset cifar10 --device cpu
+python3 infer.py --image path/to/test.jpg \
+  --model model.torchscript.pt \
+  --variant edge_small \
+  --num-classes 10 \
+  --input-size 32 \
+  --dataset cifar10 \
+  --device cpu
 ```
+Swap `--device cuda` if the Pi has a working GPU driver.
 
-## 4. Measure FPS / Benchmark (MicroSign-Edge or TorchVision)
-Use the benchmark helper from the repo root. It now accepts both MicroSign-Edge and TorchVision architectures and can load local checkpoints:
+## 4. Benchmark latency / throughput
+Use the repo benchmark helper for MicroSign-Edge or TorchVision architectures. From the repository root:
 ```bash
-# MicroSign-Edge (optionally load checkpoint)
+# MicroSign-Edge (optionally load a checkpoint)
 python3 -m microbackbone.evaluation.benchmark \
   --config microbackbone/config/model.yaml \
   --arch microsign_edge \
@@ -30,7 +40,7 @@ python3 -m microbackbone.evaluation.benchmark \
   --weights outputs/checkpoints/best.pth \
   --reparam-edge
 
-# TorchVision pretrained backbone (e.g., ResNet-18)
+# TorchVision pretrained (e.g., ResNet-18)
 python3 -m microbackbone.evaluation.benchmark \
   --config microbackbone/config/model.yaml \
   --arch resnet18 \
@@ -48,20 +58,29 @@ python3 -m microbackbone.evaluation.benchmark \
   --runs 200 \
   --weights outputs/checkpoints/mobilenet_v3_small_best.pth
 ```
+Set `--device cuda` to test Pi GPU performance if available.
 
-## 5. Enable Camera Inference
+## 5. Camera streaming inference
 ```bash
-python3 camera_infer.py --model model.torchscript.pt --variant micro --num-classes 10 --input-size 32 --dataset cifar10 --device cpu --camera 0
+python3 camera_infer.py \
+  --model model.torchscript.pt \
+  --variant edge_small \
+  --num-classes 10 \
+  --input-size 32 \
+  --dataset cifar10 \
+  --device cpu \
+  --camera 0
 ```
-Press `q` to exit.
+Press `q` to exit the preview window. Increase `--input-size` or switch `--arch` for TorchVision models if needed.
 
-## 6. Profile CPU Usage
+## 6. Monitor performance
 ```bash
 sudo apt install -y htop
 htop
 ```
-Observe the Python process while running inference.
+Observe CPU/GPU utilization while inference or benchmarking runs.
 
-## 7. Notes
-- Prefer TorchScript on Pi for faster startup.
-- Use `--device cuda` on Pi 5 with GPU drivers.
+## 7. Tips
+- Prefer TorchScript for faster Pi startup and lower memory than raw PyTorch checkpoints.
+- Keep input sizes small (e.g., 32×32 or 64×64) for Pi Zero/3; Pi 4/5 can handle larger TorchVision models.
+- When benchmarking on Pi GPUs, ensure you synchronize timings with the provided scripts and avoid additional background workload.
