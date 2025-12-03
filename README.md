@@ -95,6 +95,15 @@ python -m microbackbone.evaluation.compare_models \
   --input-size 3 32 32 \
   --device cuda
 
+# Compare a wider set of checkpoints on CPU with CIFAR-10 input shape
+python -m microbackbone.evaluation.compare_models \
+  --checkpoints outputs/checkpoints/microsignedge_edge_small_best.pth outputs/checkpoints/resnet18_best.pth \
+  outputs/checkpoints/efficientnet_b0_best.pth outputs/checkpoints/mobilenet_v3_small_best.pth \
+  outputs/checkpoints/shufflenet_v2_x0_5_best.pth outputs/checkpoints/shufflenet_v2_x1_0_best.pth \
+  --dataset-config microbackbone/config/datasets.yaml \
+  --input-size 3 32 32 \
+  --device cuda
+
 # TorchVision-only comparison (pretrained)
 python -m microbackbone.evaluation.compare_models \
   --models resnet18,efficientnet_b0,convnext_tiny \
@@ -102,7 +111,7 @@ python -m microbackbone.evaluation.compare_models \
   --dataset-config microbackbone/config/datasets.yaml \
   --device cpu
 ```
-Outputs are printed as text + markdown tables and saved to `outputs/benchmarks/compare_models.csv` with params, FLOPs, latency, throughput, file size, and top-1 accuracy.
+Outputs are printed as text + markdown tables and saved to `outputs/benchmarks/compare_models.csv` with params, FLOPs, latency, throughput, file size, top-1/top-5 accuracy, precision, recall, and F1 score.
 
 ## Exporting
 Create TorchScript/ONNX/TFLite artifacts for deployment.
