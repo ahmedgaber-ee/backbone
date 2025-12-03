@@ -102,7 +102,7 @@ python -m microbackbone.evaluation.compare_models \
   outputs/checkpoints/shufflenet_v2_x0_5_best.pth outputs/checkpoints/shufflenet_v2_x1_0_best.pth \
   --dataset-config microbackbone/config/datasets.yaml \
   --input-size 3 32 32 \
-  --device cpu
+  --device cuda
 
 # TorchVision-only comparison (pretrained)
 python -m microbackbone.evaluation.compare_models \
