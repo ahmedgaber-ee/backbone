@@ -102,7 +102,7 @@ python -m microbackbone.evaluation.compare_models \
   outputs/checkpoints/shufflenet_v2_x0_5_best.pth outputs/checkpoints/shufflenet_v2_x1_0_best.pth \
   --dataset-config microbackbone/config/datasets.yaml \
   --input-size 3 32 32 \
-  --device cuda
+  --device cpu
 
 # TorchVision-only comparison (pretrained)
 python -m microbackbone.evaluation.compare_models \
@@ -124,6 +124,37 @@ python -m microbackbone.evaluation.export_tflite \
   --quantize
 ```
 Artifacts: `model.pth`, `model.torchscript.pt`, `model.onnx`, `model.tflite` (plus `model_int8.tflite` when `--quantize`).
+
+### Optimized MicroSign-Edge for fast inference
+`microbackbone.models.MicroSignEdgeOptimized` is a Ghost/SE-tuned variant that fuses Conv+BN, avoids Python loops in
+`forward`, and keeps depthwise-heavy stages lightweight for CPUs, Raspberry Pi, and MCUs.
+
+- Uses Ghost expansion + grouped SE to improve accuracy with minimal FLOPs.
+- `fuse_model()` collapses Conv+BN for latency; safe for TorchScript/ONNX export.
+- `benchmark_latency()` measures warmup + timed iterations with proper CUDA sync.
+- `quantized()` applies int8 dynamic quantization to the classifier for CPU-only paths.
+
+Example workflow (CPU-safe; works on Pi):
+```bash
+python - <<'PY'
+import torch
+from microbackbone.models import MicroSignEdgeOptimized, benchmark_latency
+
+model = MicroSignEdgeOptimized()
+model.fuse_model()  # fuse Conv+BN for inference
+
+example = torch.randn(1, 3, 32, 32)
+scripted = model.to_torchscript(example)
+scripted.save("outputs/export/microsign_edge_optimized.torchscript.pt")
+
+model.export_onnx("outputs/export/microsign_edge_optimized.onnx", input_shape=(1, 3, 32, 32))
+int8_model = model.quantized()
+torch.save(int8_model.state_dict(), "outputs/export/microsign_edge_optimized_int8.pth")
+
+lat_ms, ips = benchmark_latency(model, device="cpu", input_shape=(1, 3, 32, 32), warmup=20, iters=100)
+print(f"Avg latency: {lat_ms:.2f} ms | Throughput: {ips:.2f} img/s")
+PY
+```
 
 ## Raspberry Pi (CPU/GPU) quick start
 See `deployment/raspberry_pi/instructions.md` for full steps. Minimal example:
