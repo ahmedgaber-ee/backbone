@@ -1,210 +1,186 @@
 # MicroBackbone (MicroSign-Edge)
 
-Lightweight CNN backbone family tailored for microcontrollers and edge devices. Extracted from the original notebook into a modular, deployable Python package with export paths for Raspberry Pi and ESP32 (TFLite Micro).
+Lightweight CNN backbones for microcontrollers, Raspberry Pi, and desktop GPUs. The repository includes the MicroSign-Edge family plus a TorchVision registry so you can train, evaluate, and benchmark your models with a single interface.
 
-## Key Features
-- **MicroSign-Edge backbone** (`edge_nano`, `edge_micro`, `edge_small`) built from Reparam Shift Depthwise (RSD) blocks.
-- Zero-FLOP shift-mix + grouped SE gating for TinyML efficiency and quantization-friendliness.
-- Activation-budget-aware channel scaling for SRAM-constrained deployments.
-- Reparameterization utility to fuse branches for MCU inference (`--reparam-edge`).
-- Training/eval scripts with clean configs and TorchVision drop-in support.
-- Export to TorchScript, ONNX, and TFLite (int8 for ESP32).
-- Deployment recipes for Raspberry Pi and ESP32.
+## What you get
+- **Backbone variants:** `edge_nano`, `edge_micro`, `edge_small` with reparameterization for MCU-friendly inference.
+- **TorchVision support:** drop-in training/eval/benchmarking for common architectures.
+- **Deployability:** export to TorchScript, ONNX, and int8 TFLite; reference guides for Raspberry Pi and ESP32 (TFLite Micro).
+- **Benchmarks:** latency/FLOPs/throughput measurement with deterministic data splits.
 
-### MicroSign-Edge at a glance
-- **RSD Block**: optional 1×1 expansion → shift-mix (up/left/down/right) → depthwise + identity fusion → grouped SE → 1×1 projection with residuals when safe.
-- **Deploy fusion**: `reparameterize_microsign_edge` collapses branches/BatchNorms to a single depthwise + pointwise path for MCU timing.
-- **Activation-aware scaling**: `_compute_edge_channels` trims channels per stage so activations remain under a simple SRAM budget (8-bit assumption).
+## Supported models
+### MicroSign-Edge (built-in)
+- `microsign_edge` with variants: `edge_nano`, `edge_micro`, `edge_small` (classification, detection, or backbone-only outputs).
 
-## Repository Structure
-```
-microbackbone/
-  models/        # backbone + modules
-  data/          # datamodule + augmentations
-  training/      # training loop, losses, metrics
-  evaluation/    # eval, benchmark, export utilities
-  config/        # yaml configs
-deployment/
-  raspberry_pi/  # inference scripts + instructions
-  esp32/         # TFLite Micro sketch + instructions
-```
+### TorchVision (registry)
+`resnet18`, `resnet34`, `resnet50`, `mobilenet_v2`, `mobilenet_v3_small`, `mobilenet_v3_large`, `shufflenet_v2_x0_5`, `shufflenet_v2_x1_0`, `mnasnet0_5`, `mnasnet0_75`, `mnasnet1_3`, `efficientnet_b0`, `efficientnet_b1`, `convnext_tiny`, `squeezenet1_0`, `squeezenet1_1`, `googlenet`, `densenet121`, `regnet_y_400mf`, `regnet_y_800mf` (pretrained weights optional).
 
 ## Installation
 ```bash
-pip install -e .
+pip install -e .               # editable install
 # or
 pip install -r requirements.txt
 ```
 
-## Training
-Train MicroSign-Edge (default) or swap in a TorchVision backbone via `--arch`:
+## Configuration
+- `microbackbone/config/model.yaml`: task, variant, num_classes, and optimizer/loss knobs.
+- `microbackbone/config/datasets.yaml`: dataset name, data root, batch size, workers, input size, train/val split, seed.
+
+## Training (GPU or CPU)
+Train MicroSign-Edge or any supported TorchVision model. Set `--device cuda` for GPU (or `cpu` for portability/Raspberry Pi without GPU).
 ```bash
-# MicroSign-Edge
+# MicroSign-Edge on GPU
 python -m microbackbone.training.train \
   --config microbackbone/config/model.yaml \
   --dataset-config microbackbone/config/datasets.yaml \
-  --output-dir outputs
+  --output-dir outputs \
+  --device cuda
 
-# TorchVision examples
-python -m microbackbone.training.train --arch resnet18 --pretrained \
-  --config microbackbone/config/model.yaml --dataset-config microbackbone/config/datasets.yaml --output-dir outputs
-
-python -m microbackbone.training.train --arch mobilenet_v3_small --pretrained \
-  --config microbackbone/config/model.yaml --dataset-config microbackbone/config/datasets.yaml --output-dir outputs
-
-python -m microbackbone.training.train --arch efficientnet_b0 --pretrained \
-  --config microbackbone/config/model.yaml --dataset-config microbackbone/config/datasets.yaml --output-dir outputs
-
-python -m microbackbone.training.train --arch convnext_tiny --pretrained \
-  --config microbackbone/config/model.yaml --dataset-config microbackbone/config/datasets.yaml --output-dir outputs
+# TorchVision example (pretrained ResNet-18) on CPU
+python -m microbackbone.training.train \
+  --arch resnet18 --pretrained \
+  --config microbackbone/config/model.yaml \
+  --dataset-config microbackbone/config/datasets.yaml \
+  --output-dir outputs \
+  --device cpu
 ```
-Checkpoints are written to `outputs/checkpoints/` with the architecture name embedded in the filename (e.g., `microsignedge_edge_small_best.pth`).
+Checkpoints land in `outputs/checkpoints/<arch>_best.pth` with metadata for arch/variant/num_classes.
 
-## Testing / Validation
+## Evaluation / Testing
 ```bash
+# Evaluate a MicroSign-Edge checkpoint
 python -m microbackbone.evaluation.test \
   --checkpoint outputs/checkpoints/microsignedge_edge_small_best.pth \
   --config microbackbone/config/model.yaml \
   --dataset-config microbackbone/config/datasets.yaml \
   --metrics precision,recall,f1 \
-  --save-report outputs/metrics/microsign_edge_eval.json
+  --device cuda
 
-# Evaluate a TorchVision checkpoint (arch auto-detected from checkpoint metadata)
+# Evaluate a TorchVision checkpoint
 python -m microbackbone.evaluation.test \
   --checkpoint outputs/checkpoints/resnet18_best.pth \
   --arch resnet18 --pretrained \
   --config microbackbone/config/model.yaml \
   --dataset-config microbackbone/config/datasets.yaml \
-  --metrics precision,recall,f1
+  --device cpu
 ```
-The evaluation command now reports top-1/top-5 accuracy plus macro/micro precision, recall, and F1 (selectable via `--metrics`).
-Use `--save-report` to persist the metrics as a serialized dictionary for later aggregation or dashboards.
+Reports include top-1/top-5 accuracy and optional macro/micro precision, recall, F1. Save JSON with `--save-report <path>`.
 
-## Benchmarking
+## Benchmarking (latency/FLOPs/throughput)
 ```bash
-# MicroSign-Edge (with optional reparameterization)
+# MicroSign-Edge (optionally reparameterize for inference)
 python -m microbackbone.evaluation.benchmark \
-  --config microbackbone/config/model.yaml --input-size 32 --runs 200 --reparam-edge
+  --config microbackbone/config/model.yaml \
+  --input-size 32 \
+  --runs 200 \
+  --device cuda \
+  --reparam-edge
 
-# TorchVision backbone (pretrained head replaced for dataset classes)
+# TorchVision backbone (pretrained head adapted to dataset classes)
 python -m microbackbone.evaluation.benchmark \
-  --arch resnet18 --pretrained \
-  --config microbackbone/config/model.yaml --input-size 32 --runs 200
+  --arch mobilenet_v3_small --pretrained \
+  --config microbackbone/config/model.yaml \
+  --input-size 224 \
+  --runs 200 \
+  --device cpu
 ```
+Benchmarks honor deterministic seeds from `datasets.yaml`, warm up before timing, and synchronize CUDA to avoid skew. FLOPs use THOP when available.
 
-### Compare trained and pretrained models
-Run side-by-side benchmarks for your checkpoints and TorchVision backbones (pretrained or scratch):
+### Compare multiple models side-by-side
 ```bash
-# Compare multiple trained checkpoints
+# Compare trained checkpoints
 python -m microbackbone.evaluation.compare_models \
   --checkpoints outputs/checkpoints/microsignedge_edge_small_best.pth outputs/checkpoints/resnet18_best.pth \
   --dataset-config microbackbone/config/datasets.yaml \
   --input-size 3 32 32 \
+  --device cuda
+
+# Compare a wider set of checkpoints on CPU with CIFAR-10 input shape
+python -m microbackbone.evaluation.compare_models \
+  --checkpoints outputs/checkpoints/microsignedge_edge_small_best.pth outputs/checkpoints/resnet18_best.pth \
+  outputs/checkpoints/efficientnet_b0_best.pth outputs/checkpoints/mobilenet_v3_small_best.pth \
+  outputs/checkpoints/shufflenet_v2_x0_5_best.pth outputs/checkpoints/shufflenet_v2_x1_0_best.pth \
+  --dataset-config microbackbone/config/datasets.yaml \
+  --input-size 3 32 32 \
   --device cpu
 
-# Compare trained checkpoint vs. pretrained TorchVision models
+# TorchVision-only comparison (pretrained)
 python -m microbackbone.evaluation.compare_models \
-  --checkpoints outputs/checkpoints/microsignedge_edge_small_best.pth \
-  --models resnet50,mobilenet_v3_large \
+  --models resnet18,efficientnet_b0,convnext_tiny \
   --pretrained \
-  --dataset-config microbackbone/config/datasets.yaml
-
-# Benchmark all supported TorchVision backbones (pretrained) without checkpoints
-python -m microbackbone.evaluation.compare_models --all --pretrained --dataset-config microbackbone/config/datasets.yaml
+  --dataset-config microbackbone/config/datasets.yaml \
+  --device cpu
 ```
-Outputs are printed as text + markdown tables and saved as `outputs/benchmarks/compare_models.csv` (create the directory if it does not exist). Metrics include params, FLOPs, latency, throughput, file size, and top-1 accuracy on the validation split defined by your dataset config.
-TorchVision-only comparisons are supported (omit `--checkpoints` and use `--models`/`--all`), and the dataset config drives the evaluation dataloaders and `num_classes` when adapting classifier heads.
+Outputs are printed as text + markdown tables and saved to `outputs/benchmarks/compare_models.csv` with params, FLOPs, latency, throughput, file size, top-1/top-5 accuracy, precision, recall, and F1 score.
 
-### TorchVision-only testing/benchmarking
-- **Test a pretrained TorchVision model on your dataset** (classifier head auto-replaced by `num_classes` in the dataset config):
-  ```bash
-  python -m microbackbone.evaluation.test \
-    --checkpoint /tmp/random_init.pth \
-    --arch resnet50 --pretrained \
-    --config microbackbone/config/model.yaml \
-    --dataset-config microbackbone/config/datasets.yaml
-  ```
-- **Benchmark a TorchVision backbone** without training:
-  ```bash
-  python -m microbackbone.evaluation.benchmark --arch mobilenet_v3_small --pretrained --input-size 32
-  ```
-- **Compare multiple TorchVision architectures** (pretrained) with one command:
-  ```bash
-  python -m microbackbone.evaluation.compare_models --models resnet18,efficientnet_b0,convnext_tiny --pretrained --dataset-config microbackbone/config/datasets.yaml
-  ```
-
-
-## Exporting (TorchScript / ONNX / TFLite)
+## Exporting
+Create TorchScript/ONNX/TFLite artifacts for deployment.
 ```bash
 python -m microbackbone.evaluation.export_tflite \
   --checkpoint outputs/checkpoints/microsignedge_edge_small_best.pth \
   --config microbackbone/config/model.yaml \
   --input-size 32 \
-  --output-dir outputs/export --quantize
+  --output-dir outputs/export \
+  --quantize
 ```
-Artifacts: `model.pth`, `model.torchscript.pt`, `model.onnx`, `model.tflite`/`model_int8.tflite`.
+Artifacts: `model.pth`, `model.torchscript.pt`, `model.onnx`, `model.tflite` (plus `model_int8.tflite` when `--quantize`).
 
-## Raspberry Pi Inference
-See `deployment/raspberry_pi/instructions.md`. Quick start:
+### Optimized MicroSign-Edge for fast inference
+`microbackbone.models.MicroSignEdgeOptimized` is a Ghost/SE-tuned variant that fuses Conv+BN, avoids Python loops in
+`forward`, and keeps depthwise-heavy stages lightweight for CPUs, Raspberry Pi, and MCUs.
+
+- Uses Ghost expansion + grouped SE to improve accuracy with minimal FLOPs.
+- `fuse_model()` collapses Conv+BN for latency; safe for TorchScript/ONNX export.
+- `benchmark_latency()` measures warmup + timed iterations with proper CUDA sync.
+- `quantized()` applies int8 dynamic quantization to the classifier for CPU-only paths.
+
+Example workflow (CPU-safe; works on Pi):
+```bash
+python - <<'PY'
+import torch
+from microbackbone.models import MicroSignEdgeOptimized, benchmark_latency
+
+model = MicroSignEdgeOptimized()
+model.fuse_model()  # fuse Conv+BN for inference
+
+example = torch.randn(1, 3, 32, 32)
+scripted = model.to_torchscript(example)
+scripted.save("outputs/export/microsign_edge_optimized.torchscript.pt")
+
+model.export_onnx("outputs/export/microsign_edge_optimized.onnx", input_shape=(1, 3, 32, 32))
+int8_model = model.quantized()
+torch.save(int8_model.state_dict(), "outputs/export/microsign_edge_optimized_int8.pth")
+
+lat_ms, ips = benchmark_latency(model, device="cpu", input_shape=(1, 3, 32, 32), warmup=20, iters=100)
+print(f"Avg latency: {lat_ms:.2f} ms | Throughput: {ips:.2f} img/s")
+PY
+```
+
+## Raspberry Pi (CPU/GPU) quick start
+See `deployment/raspberry_pi/instructions.md` for full steps. Minimal example:
 ```bash
 cd deployment/raspberry_pi
-python3 infer.py --image sample.jpg --model ../outputs/export/model.torchscript.pt --input-size 32 --dataset cifar10
+python3 infer.py --image sample.jpg \
+  --model ../outputs/export/model.torchscript.pt \
+  --variant edge_small --num-classes 10 --input-size 32 --dataset cifar10 --device cpu
 ```
+Use `--device cuda` on Pi 5 if drivers are installed. Camera streaming is supported via `camera_infer.py`.
 
-## ESP32 (TinyML)
-See `deployment/esp32/instructions.md`. Export an int8 TFLite model, convert to `model_data.h`, and flash `esp32_main.cpp` with your board settings.
+## ESP32 (TFLite Micro)
+See `deployment/esp32/instructions.md`. Export int8 TFLite, convert to `model_data.h`, and flash `esp32_main.cpp` with your board config.
 
-## Notes
-- Adjust `microbackbone/config/model.yaml` to change variants or dataset classes.
-- Use `microbackbone/config/datasets.yaml` to point to custom folders or tweak batch size.
+## Reproducibility tips
+- Set the `seed` field in `microbackbone/config/datasets.yaml` for deterministic train/val splits and benchmarking seeds.
+- Keep `input_size`, `batch_size`, and `train_split` consistent between training, testing, and benchmarking.
+- For GPUs, consider `torch.backends.cudnn.benchmark = False` if you need determinism over speed.
 
-## Pruning and Quantization
-Use the standalone `model-tools` CLI to prune or quantize checkpoints without changing existing training workflows.
+## Helpful paths
+- Training/eval configs: `microbackbone/config/`
+- Models: `microbackbone/models/`
+- Data module: `microbackbone/data/`
+- Training loop: `microbackbone/training/train.py`
+- Eval/benchmark tools: `microbackbone/evaluation/`
+- Deployment: `deployment/`
 
-### Overview
-- **Pruning**: structured (filter/channel) or unstructured (magnitude) sparsification using PyTorch prune utilities.
-- **Quantization**: dynamic (no calibration) or static (with calibration data) for reduced size and latency.
-- Outputs reuse the original checkpoint metadata and save to the path you provide.
-
-### CLI usage
-Prune a model:
-```bash
-python -m microbackbone.tools.model_tools prune \
-  --input-model outputs/checkpoints/resnet18_best.pth \
-  --output-model outputs/pruned/resnet18_pruned.pth \
-  --pruning-type structured \
-  --pruning-ratio 0.2
-```
-
-Quantize a model (dynamic):
-```bash
-python -m microbackbone.tools.model_tools quantize \
-  --input-model outputs/checkpoints/microsignedge_edge_small_best.pth \
-  --output-model outputs/quantized/microsignedge_int8.pth \
-  --quantization-type dynamic
-```
-
-Quantize with static calibration:
-```bash
-python -m microbackbone.tools.model_tools quantize \
-  --input-model outputs/checkpoints/resnet18_best.pth \
-  --output-model outputs/quantized/resnet18_static_int8.pth \
-  --quantization-type static \
-  --calibration-data /path/to/calibration/folder \
-  --input-size 32 \
-  --batch-size 32
-```
-
-### Recommended settings
-- **Unstructured pruning**: `--pruning-type=unstructured --pruning-ratio=0.3` (good sparsity/accuracy trade-off).
-- **Structured pruning**: `--pruning-type=structured --pruning-ratio=0.2` (hardware-friendly for CNNs).
-- **Workflow**: apply moderate pruning (20–30%), fine-tune 3–5 epochs, then export.
-- **Dynamic quantization**: `--quantization-type=dynamic` (great general-purpose option, no calibration needed).
-- **Static quantization**: `--quantization-type=static` with 200–500 representative samples via `--calibration-data`.
-- Combine pruning then quantization for further size/speed gains; validate accuracy after each step.
-
-### Outputs
-- Saved checkpoints mirror the input format (state dict + metadata) at `--output-model`.
-- Logs describe pruning/quantization steps according to `--log-level`.
-- Calibrated static quantization consumes the provided sample folder but leaves it unchanged.
-
+## Licensing and citation
+This repository is provided as-is for research and edge deployment experiments. Cite MicroSign-Edge if you build upon the backbone or benchmarks.

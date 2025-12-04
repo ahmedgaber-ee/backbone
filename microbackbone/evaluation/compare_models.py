@@ -15,7 +15,6 @@ from torch.utils.data import DataLoader
 from microbackbone.data.datamodule import MicroBackboneDataModule
 from microbackbone.models.utils import (
     TORCHVISION_MODELS,
-    accuracy,
     create_model,
     create_torchvision_model,
 )
@@ -68,7 +67,7 @@ def parse_args() -> argparse.Namespace:
         "--input-size",
         type=int,
         nargs=3,
-        default=[3, 224, 224],
+        default=None,
         metavar=("C", "H", "W"),
         help="Model input size (channels height width) for benchmarking",
     )
@@ -152,7 +151,7 @@ def benchmark_model(
     warmup: int,
     weights_path: Path | None,
     device: torch.device,
-    top1: Optional[float] = None,
+    metrics: Optional[Dict[str, float]] = None,
 ) -> BenchmarkResult:
     params = sum(p.numel() for p in model.parameters())
     flops = _compute_flops(model, dummy)
@@ -161,6 +160,11 @@ def benchmark_model(
 
     params_m = params / 1e6
     flops_m = flops / 1e6 if flops is not None else None
+    metrics = metrics or {}
+
+    def _fmt_metric(key: str) -> str:
+        value = metrics.get(key)
+        return f"{value:.2f}" if value is not None else "N/A"
 
     result: BenchmarkResult = {
         "Model Name": name,
@@ -169,7 +173,11 @@ def benchmark_model(
         "Latency (ms)": f"{latency_ms:.2f}",
         "Throughput (img/s)": f"{throughput:.2f}",
         "File Size (MB)": f"{size_mb:.2f}",
-        "Top-1 Acc (%)": f"{top1:.2f}" if top1 is not None else "N/A",
+        "Top-1 Acc (%)": _fmt_metric("top1"),
+        "Top-5 Acc (%)": _fmt_metric("top5"),
+        "Precision (%)": _fmt_metric("precision"),
+        "Recall (%)": _fmt_metric("recall"),
+        "F1 Score (%)": _fmt_metric("f1"),
     }
     return result
 
@@ -220,18 +228,50 @@ def _num_classes_from_data(dm: MicroBackboneDataModule) -> int:
     return 10
 
 
-def evaluate_accuracy(model: nn.Module, loader: DataLoader, device: torch.device) -> float:
+def evaluate_metrics(
+    model: nn.Module, loader: DataLoader, device: torch.device, topk: Tuple[int, ...] = (1, 5)
+) -> Dict[str, float]:
     model.eval()
-    correct = 0.0
+    correct_at_k = {k: 0.0 for k in topk}
     total = 0
+    true_positive = 0.0
+    predicted_total = 0.0
+    true_total = 0.0
+
     with torch.no_grad():
         for imgs, labels in loader:
             imgs, labels = imgs.to(device, non_blocking=True), labels.to(device, non_blocking=True)
             outputs = model(imgs)
-            acc1 = accuracy(outputs, labels, topk=(1,))[0]
-            correct += acc1.item() * imgs.size(0) / 100
-            total += imgs.size(0)
-    return 100 * correct / total if total > 0 else 0.0
+
+            max_k = min(max(topk), outputs.size(1))
+            _, pred_topk = outputs.topk(max_k, 1, True, True)
+            pred_topk = pred_topk.t()
+            correct = pred_topk.eq(labels.view(1, -1))
+
+            for k in topk:
+                capped_k = min(k, max_k)
+                correct_at_k[k] += correct[:capped_k].reshape(-1).float().sum().item()
+
+            preds = outputs.argmax(dim=1)
+            matches = preds.eq(labels)
+            true_positive += matches.sum().item()
+            predicted_total += preds.numel()
+            true_total += labels.numel()
+            total += labels.size(0)
+
+    top1 = 100 * correct_at_k.get(1, 0.0) / total if total > 0 else 0.0
+    top5 = 100 * correct_at_k.get(5, 0.0) / total if total > 0 else 0.0
+    precision = 100 * true_positive / predicted_total if predicted_total > 0 else 0.0
+    recall = 100 * true_positive / true_total if true_total > 0 else 0.0
+    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+
+    return {
+        "top1": top1,
+        "top5": top5,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+    }
 
 def format_markdown_table(results: List[BenchmarkResult]) -> str:
     headers = list(results[0].keys())
@@ -265,13 +305,23 @@ def save_csv(results: List[BenchmarkResult], output_path: Path) -> None:
 def main() -> None:
     args = parse_args()
     device = torch.device(args.device)
-    input_shape = tuple(args.input_size)
-    dummy = torch.randn(1, *input_shape, device=device)
     save_root = Path(args.save_dir)
     save_root.mkdir(parents=True, exist_ok=True)
 
     data_cfg = load_yaml(Path(args.dataset_config)) if yaml is not None else {}
     model_cfg = load_yaml(Path(args.model_config)) if yaml is not None else {}
+
+    # Align benchmark input size with dataset configuration by default for fair comparisons
+    if args.input_size is not None:
+        input_shape = tuple(args.input_size)
+    else:
+        cfg_size = data_cfg.get("input_size", 224)
+        input_shape = (3, cfg_size, cfg_size)
+
+    seed = data_cfg.get("seed", 42)
+    torch.manual_seed(seed)
+
+    dummy = torch.randn(1, *input_shape, device=device)
 
     batch_size = args.batch_size or data_cfg.get("batch_size", 128)
     num_workers = args.num_workers or data_cfg.get("num_workers", 4)
@@ -286,6 +336,7 @@ def main() -> None:
         num_workers=num_workers,
         input_size=input_size,
         train_split=train_split,
+        seed=seed,
     )
     dm.setup()
     num_classes = _num_classes_from_data(dm)
@@ -298,14 +349,14 @@ def main() -> None:
         if not ckpt_path.exists():
             print(f"[WARN] checkpoint not found: {ckpt_path}")
             continue
-        model, arch, _, recorded_acc = load_checkpoint_model(
+        model, arch, _, _ = load_checkpoint_model(
             ckpt_path,
             device=device,
             default_num_classes=num_classes,
             input_size=input_shape,
             fallback_cfg=model_cfg,
         )
-        acc = recorded_acc if recorded_acc is not None else evaluate_accuracy(model, dm.val_dataloader(), device)
+        metrics = evaluate_metrics(model, dm.val_dataloader(), device)
         results.append(
             benchmark_model(
                 name=f"{ckpt_path.stem} ({arch})",
@@ -315,7 +366,7 @@ def main() -> None:
                 warmup=args.warmup,
                 weights_path=ckpt_path,
                 device=device,
-                top1=acc,
+                metrics=metrics,
             )
         )
 
@@ -328,7 +379,7 @@ def main() -> None:
             pretrained=args.pretrained,
             device=device,
         )
-        acc = evaluate_accuracy(tv_model, dm.val_dataloader(), device)
+        metrics = evaluate_metrics(tv_model, dm.val_dataloader(), device)
         readable_name = f"{model_name} ({'pretrained' if args.pretrained else 'scratch'})"
         results.append(
             benchmark_model(
@@ -339,7 +390,7 @@ def main() -> None:
                 warmup=args.warmup,
                 weights_path=None,
                 device=device,
-                top1=acc,
+                metrics=metrics,
             )
         )
 
